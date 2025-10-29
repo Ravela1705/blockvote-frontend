@@ -1,39 +1,47 @@
 import * as admin from 'firebase-admin';
 import { ethers } from 'ethers'; // Using Ethers v5
 
-// --- NEW: Load Service Account from Environment Variable ---
-let serviceAccount;
-try {
-    if (!process.env.FIREBASE_SERVICE_ACCOUNT_JSON) {
-        throw new Error("FIREBASE_SERVICE_ACCOUNT_JSON environment variable is not set.");
+// --- NEW Initialization Logic (Same as registerUser.js) ---
+const initializeFirebaseAdmin = () => {
+    if (admin.apps.length > 0) {
+        console.log("Firebase Admin SDK already initialized.");
+        return admin.app();
     }
-    serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_JSON);
+    let serviceAccount;
+    try {
+        if (!process.env.FIREBASE_SERVICE_ACCOUNT_JSON) {
+            throw new Error("FIREBASE_SERVICE_ACCOUNT_JSON environment variable is not set.");
+        }
+        serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_JSON);
+         if (!serviceAccount.project_id || !serviceAccount.client_email || !serviceAccount.private_key) {
+             throw new Error("Parsed service account JSON is missing required fields.");
+        }
+    } catch (e) {
+        console.error("CRITICAL ERROR: Could not parse or validate FIREBASE_SERVICE_ACCOUNT_JSON:", e.message);
+        throw new Error("Could not parse Firebase service account JSON.");
+    }
+    try {
+        console.log("Initializing Firebase Admin SDK...");
+        const app = admin.initializeApp({ credential: admin.credential.cert(serviceAccount) });
+        console.log("Firebase Admin SDK Initialized Successfully.");
+        return app;
+    } catch (initError) {
+        console.error("CRITICAL ERROR: Firebase Admin SDK Initialization Failed:", initError);
+         throw new Error('Firebase Admin SDK could not be initialized.');
+    }
+};
+let auth, db;
+try {
+    const app = initializeFirebaseAdmin();
+    auth = admin.auth(app);
+    db = admin.firestore(app);
 } catch (e) {
-    console.error("Error parsing FIREBASE_SERVICE_ACCOUNT_JSON:", e);
-    throw new Error("Could not parse Firebase service account JSON. Check .env.local format.");
+     console.error("Failed to get Firebase services after initialization attempt:", e.message);
 }
-// --- End NEW section ---
+// --- End Initialization Logic ---
 
 
-// Initialize Firebase Admin (if it's not already)
-if (!admin.apps.length) {
-   try {
-    admin.initializeApp({
-      credential: admin.credential.cert(serviceAccount), // Use parsed serviceAccount
-    });
-    console.log("Firebase Admin SDK Initialized Successfully.");
-  } catch (initError) {
-    console.error("Firebase Admin SDK Initialization Failed:", initError);
-     throw new Error('Firebase Admin SDK could not be initialized.');
-  }
-} else {
-     console.log("Firebase Admin SDK already initialized.");
-}
-
-const auth = admin.auth();
-const db = admin.firestore();
-
-// --- Blockchain Config ---
+// --- Blockchain Config (No changes needed here) ---
 const ADMIN_PRIVATE_KEY = process.env.ADMIN_PRIVATE_KEY;
 const CONTRACT_ADDRESS = process.env.NEXT_PUBLIC_CONTRACT_ADDRESS;
 const RPC_URL = process.env.NEXT_PUBLIC_RPC_URL;
@@ -60,6 +68,12 @@ try {
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Method Not Allowed' });
+  }
+
+  // Check if auth/db failed to initialize
+  if (!auth || !db) {
+      console.error("Firebase services not available in handler.");
+      return res.status(500).json({ error: 'Server configuration error. Firebase services unavailable.' });
   }
 
   try {
@@ -92,9 +106,13 @@ export default async function handler(req, res) {
     }
     console.log("User is eligible to vote.");
 
-    // 5. Send vote to Blockchain
-    console.log(`Submitting vote to contract ${CONTRACT_ADDRESS}...`);
-    const tx = await contract.recordVote(electionId, candidateId);
+    // 5. Send vote to Blockchain (Add gas overrides here too!)
+    const gasOverrides = {
+        maxPriorityFeePerGas: ethers.utils.parseUnits('30', 'gwei'),
+        maxFeePerGas: ethers.utils.parseUnits('100', 'gwei')
+    };
+    console.log(`Submitting vote to contract ${CONTRACT_ADDRESS} with gas overrides...`);
+    const tx = await contract.recordVote(electionId, candidateId, gasOverrides); // Added overrides
     console.log("Transaction sent, waiting for confirmation...");
     await tx.wait();
     console.log(`Vote successful! Hash: ${tx.hash}`);
