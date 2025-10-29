@@ -1,14 +1,11 @@
-import * as admin from 'firebase-admin'; // Still needed for Firestore
+import * as admin from 'firebase-admin';
 
-// --- Firebase Admin Initialization (Only for Firestore) ---
-// We keep this part to interact with the database, assuming it works for Firestore.
+// --- Initialization Logic ---
+// We still need admin for Firestore access
 let adminApp;
 const initializeFirebaseAdmin = () => {
     const existingApp = admin.apps.find(app => app.name === '[DEFAULT]');
-    if (existingApp) {
-        console.log("Firebase Admin SDK [DEFAULT] app already exists.");
-        adminApp = existingApp; return adminApp;
-    }
+    if (existingApp) { console.log("Firebase Admin SDK [DEFAULT] app already exists."); adminApp = existingApp; return adminApp; }
     let serviceAccount;
     try {
         if (!process.env.FIREBASE_SERVICE_ACCOUNT_JSON) throw new Error("FIREBASE_SERVICE_ACCOUNT_JSON not set.");
@@ -25,88 +22,73 @@ const initializeFirebaseAdmin = () => {
 // --- End Initialization ---
 
 
-// --- NEW: Firebase Auth REST API Details ---
-const FIREBASE_WEB_API_KEY = process.env.NEXT_PUBLIC_FIREBASE_API_KEY; // Get key from env
-const FIREBASE_AUTH_SIGNUP_URL = `https://identitytoolkit.googleapis.com/v1/accounts:signUp?key=${FIREBASE_WEB_API_KEY}`;
-// --- End NEW Section ---
-
-
 // --- API Handler ---
 export default async function handler(req, res) {
     if (req.method !== 'POST') return res.status(405).json({ error: 'Method Not Allowed' });
 
-    let db; // We only need Firestore from admin SDK now
+    let auth, db;
     try {
         const app = initializeFirebaseAdmin(); // Ensure initialized
-        db = admin.firestore(app); // Get firestore
-        if (!db) throw new Error("Failed to get Firestore service.");
+        auth = admin.auth(app); // Needed for token verification
+        db = admin.firestore(app); // Needed for database write
+        if (!auth || !db) throw new Error("Failed to get Firebase services.");
     } catch (e) {
         console.error("Failed during Firebase service initialization in handler:", e.message);
         return res.status(500).json({ error: 'Server configuration error (Firebase init).' });
     }
 
-    const { email, password } = req.body;
-    if (!email || !password) return res.status(400).json({ error: 'Email and password are required.' });
+    // --- *** UPDATED LOGIC *** ---
+    // Expect UID and email from client after successful client-side auth
+    // Expect Authorization header with ID token
+    const { uid, email } = req.body;
+    const token = req.headers.authorization?.split('Bearer ')[1];
+
+    if (!uid || !email) {
+        return res.status(400).json({ error: 'User ID and email are required.' });
+    }
+    if (!token) {
+        return res.status(401).json({ error: 'Authorization token required.' });
+    }
+    // --- *** END UPDATED LOGIC *** ---
+
 
     try {
-        // --- NEW: Use REST API to Create User ---
-        console.log("Attempting to create user via REST API:", email);
-        const restApiResponse = await fetch(FIREBASE_AUTH_SIGNUP_URL, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                email: email,
-                password: password,
-                returnSecureToken: false // We don't need the token here
-            })
-        });
+        // --- *** NEW: Verify Token *** ---
+        // Verify the ID token passed from the client to ensure the request is legitimate
+        console.log("Verifying ID token for UID:", uid);
+        const decodedToken = await auth.verifyIdToken(token);
 
-        const restApiData = await restApiResponse.json();
-
-        if (!restApiResponse.ok) {
-            // Handle errors from the REST API
-            const errorMsg = restApiData?.error?.message || 'Unknown Firebase Auth REST API error.';
-            console.error('Firebase Auth REST API Error:', errorMsg, restApiData);
-             // Map common error messages
-             if (errorMsg === 'EMAIL_EXISTS') {
-                throw new Error('This email address is already registered.');
-             } else if (errorMsg === 'WEAK_PASSWORD : Password should be at least 6 characters') {
-                 throw new Error('Password must be at least 6 characters long.');
-             }
-            throw new Error(`Firebase Auth REST API failed: ${errorMsg}`);
+        // Check if the UID in the token matches the UID passed in the body
+        if (decodedToken.uid !== uid) {
+            console.error("Token UID mismatch:", decodedToken.uid, "vs", uid);
+            return res.status(403).json({ error: 'Forbidden: Token does not match user ID.' });
         }
+        console.log("ID token verified successfully for:", decodedToken.email);
+        // --- *** END NEW *** ---
 
-        const userId = restApiData.localId; // Get the user ID from the REST response
-        if (!userId) {
-             throw new Error('Firebase Auth REST API did not return a user ID.');
-        }
-        console.log("User created successfully via REST API:", userId);
-        // --- End NEW Section ---
-
-
-        // 2. Add the user to our "voters" list in Firestore (using Admin SDK)
-        console.log("Adding user to Firestore:", userId);
-        await db.collection('voters').doc(userId).set({
-            email: email, // Save email for reference
+        // 2. Add the user to our "voters" list in Firestore
+        // This part remains largely the same, but uses the UID from the verified token
+        console.log("Adding user to Firestore:", decodedToken.uid);
+        await db.collection('voters').doc(decodedToken.uid).set({
+            email: email, // Save the email provided (should match token email)
             hasVoted_election_1: false
         });
         console.log("User added to Firestore successfully.");
 
         // 3. Send a success message back
-        // We don't have the full userRecord anymore, just the ID
-        res.status(200).json({ success: true, uid: userId });
+        res.status(200).json({ success: true, uid: decodedToken.uid });
 
     } catch (error) {
-        console.error('Error in registerUser execution:', error);
-        let errorMessage = 'An unknown error occurred during registration.';
+        console.error('Error in registerUser (Firestore write):', error);
+        let errorMessage = 'Failed to complete registration on server.';
         let statusCode = 500;
-        if (error instanceof Error) {
+        // Check if it's a token verification error
+        if (error instanceof Error && error.code?.startsWith('auth/')) {
+            errorMessage = `Authentication error: ${error.message}`;
+            statusCode = 401; // Or 403 Forbidden
+        } else if (error instanceof Error) {
             errorMessage = error.message;
-            // Set status code based on common errors
-             if (errorMessage.includes("already registered") || errorMessage.includes("Password")) {
-                 statusCode = 400;
-             }
         }
-        res.status(statusCode).json({ error: errorMessage });
+        res.status(statusCode).json({ error: errorMessage, code: error?.code });
     }
 }
