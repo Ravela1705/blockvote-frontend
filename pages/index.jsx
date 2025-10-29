@@ -54,12 +54,12 @@ try {
 
 
 // --- 2. GEMINI API CONFIGURATION ---
-const GEMINI_API_KEY = "YOUR_GEMINI_API_KEY_HERE"; // PASTE YOUR KEY HERE
+const GEMINI_API_KEY = "AIzaSyDluI5_VUwSkC3A_7guSNI1XrQTBmqzY-Y"; // PASTE YOUR KEY HERE
 const GEMINI_API_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key=${GEMINI_API_KEY}`;
 
 // Gemini API Helper Function
 const callGemini = async (prompt, retries = 3, delay = 1000) => { /* ... same as before ... */
-    if (!GEMINI_API_KEY || GEMINI_API_KEY === "YOUR_GEMINI_API_KEY_HERE") return "Gemini API key not set.";
+    if (!GEMINI_API_KEY || GEMINI_API_KEY === "AIzaSyDluI5_VUwSkC3A_7guSNI1XrQTBmqzY-Y") return "Gemini API key not set.";
     try { const payload = { contents: [{ parts: [{ text: prompt }] }] }; const response = await fetch(GEMINI_API_URL, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }); if (!response.ok) { if ((response.status === 429 || response.status >= 500) && retries > 0) { await new Promise(resolve => setTimeout(resolve, delay)); return callGemini(prompt, retries - 1, delay * 2); } throw new Error(`API Error: ${response.statusText}`); } const result = await response.json(); const candidate = result.candidates?.[0]; if (candidate?.content?.parts?.[0]?.text) return candidate.content.parts[0].text; console.warn("Unexpected Gemini response:", result); return "Could not generate response."; } catch (error) { console.error("Error calling Gemini:", error); if (retries > 0) { await new Promise(resolve => setTimeout(resolve, delay)); return callGemini(prompt, retries - 1, delay * 2); } return `Error: ${error.message}.`; }
 };
 
