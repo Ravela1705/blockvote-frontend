@@ -1,13 +1,32 @@
 import * as admin from 'firebase-admin';
 
-// Import our secret key
-const serviceAccount = require('../../serviceAccountKey.json');
+// --- NEW: Load Service Account from Environment Variable ---
+let serviceAccount;
+try {
+    if (!process.env.FIREBASE_SERVICE_ACCOUNT_JSON) {
+        throw new Error("FIREBASE_SERVICE_ACCOUNT_JSON environment variable is not set.");
+    }
+    serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_JSON);
+} catch (e) {
+    console.error("Error parsing FIREBASE_SERVICE_ACCOUNT_JSON in getVoteDetails:", e);
+    throw new Error("Could not parse Firebase service account JSON. Check .env.local format and Vercel environment variables.");
+}
+// --- End NEW section ---
+
 
 // Initialize Firebase Admin (if it's not already)
 if (!admin.apps.length) {
-  admin.initializeApp({
-    credential: admin.credential.cert(serviceAccount),
-  });
+   try {
+    admin.initializeApp({
+      credential: admin.credential.cert(serviceAccount), // Use parsed serviceAccount
+    });
+    console.log("Firebase Admin SDK Initialized Successfully in getVoteDetails.");
+  } catch (initError) {
+    console.error("Firebase Admin SDK Initialization Failed in getVoteDetails:", initError);
+     throw new Error('Firebase Admin SDK could not be initialized in getVoteDetails.');
+  }
+} else {
+     console.log("Firebase Admin SDK already initialized.");
 }
 
 const auth = admin.auth();
@@ -19,13 +38,13 @@ export default async function handler(req, res) {
   }
 
   try {
-    // 1. Get the user's ID Token from the "Authorization" header
+    // 1. Get the user's ID Token
     const token = req.headers.authorization?.split('Bearer ')[1];
     if (!token) {
       return res.status(401).json({ error: 'Authentication required.' });
     }
 
-    // 2. Verify the token to securely get the user's ID
+    // 2. Verify token
     const decodedToken = await auth.verifyIdToken(token);
     const userId = decodedToken.uid;
 
@@ -34,13 +53,18 @@ export default async function handler(req, res) {
     const voterDoc = await voterDocRef.get();
 
     if (!voterDoc.exists) {
-      return res.status(404).json({ error: 'Voter registration not found.' });
+      // It's okay if the doc doesn't exist yet, just means they haven't registered/voted
+       return res.status(200).json({
+          hasVoted: false,
+          hash: null
+       });
+      // return res.status(404).json({ error: 'Voter registration not found.' });
     }
 
-    // 4. Send back their vote details (the hash)
+    // 4. Send back their vote details
     const data = voterDoc.data();
-    res.status(200).json({ 
-      hasVoted: data.hasVoted_election_1,
+    res.status(200).json({
+      hasVoted: data.hasVoted_election_1 || false, // Default to false if field missing
       hash: data.voteHash_election_1 || null // Send the hash, or null if it doesn't exist
     });
 
