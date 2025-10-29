@@ -44,10 +44,13 @@ const LoginView = () => {
     try {
         let authResponse;
         if (isRegistering) {
-            // Step 1: Sign up with Supabase Auth
-            console.log("Attempting Supabase sign up for:", email);
-            authResponse = await supabase.auth.signUp({ email, password });
-            console.log("Supabase signup response:", authResponse);
+     // Step 1: Sign up with Supabase Auth
+     console.log("Attempting Supabase sign up for:", email); // Log the email
+     // ADD THIS LINE:
+     console.log("Email string being sent:", `"${email}"`); // Log with quotes to see spaces
+     // ------------
+     authResponse = await supabase.auth.signUp({ email, password });
+     // ... rest of the code
 
             if (authResponse.error) throw authResponse.error;
             // Check if user object exists, especially if email confirmation is required
