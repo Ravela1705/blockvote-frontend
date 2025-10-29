@@ -1,7 +1,7 @@
 import * as admin from 'firebase-admin';
 
 // --- Initialization Logic ---
-// We still need admin for Firestore access
+// We still need admin for Firestore and token verification
 let adminApp;
 const initializeFirebaseAdmin = () => {
     const existingApp = admin.apps.find(app => app.name === '[DEFAULT]');
@@ -37,7 +37,6 @@ export default async function handler(req, res) {
         return res.status(500).json({ error: 'Server configuration error (Firebase init).' });
     }
 
-    // --- *** UPDATED LOGIC *** ---
     // Expect UID and email from client after successful client-side auth
     // Expect Authorization header with ID token
     const { uid, email } = req.body;
@@ -49,12 +48,9 @@ export default async function handler(req, res) {
     if (!token) {
         return res.status(401).json({ error: 'Authorization token required.' });
     }
-    // --- *** END UPDATED LOGIC *** ---
-
 
     try {
-        // --- *** NEW: Verify Token *** ---
-        // Verify the ID token passed from the client to ensure the request is legitimate
+        // --- Verify Token ---
         console.log("Verifying ID token for UID:", uid);
         const decodedToken = await auth.verifyIdToken(token);
 
@@ -64,25 +60,23 @@ export default async function handler(req, res) {
             return res.status(403).json({ error: 'Forbidden: Token does not match user ID.' });
         }
         console.log("ID token verified successfully for:", decodedToken.email);
-        // --- *** END NEW *** ---
 
-        // 2. Add the user to our "voters" list in Firestore
-        // This part remains largely the same, but uses the UID from the verified token
+        // --- Create Firestore Record ---
         console.log("Adding user to Firestore:", decodedToken.uid);
+        // Use set with merge: false (or just set) to ensure we don't overwrite if it somehow exists
         await db.collection('voters').doc(decodedToken.uid).set({
-            email: email, // Save the email provided (should match token email)
-            hasVoted_election_1: false
-        });
+            email: email, // Save the email provided
+            hasVoted_election_1: false // Initialize voting status
+        }, { merge: false }); // Use set instead of update to create if not exists
         console.log("User added to Firestore successfully.");
 
-        // 3. Send a success message back
+        // --- Send Success ---
         res.status(200).json({ success: true, uid: decodedToken.uid });
 
     } catch (error) {
-        console.error('Error in registerUser (Firestore write):', error);
+        console.error('Error in registerUser (Firestore write/Token verify):', error);
         let errorMessage = 'Failed to complete registration on server.';
         let statusCode = 500;
-        // Check if it's a token verification error
         if (error instanceof Error && error.code?.startsWith('auth/')) {
             errorMessage = `Authentication error: ${error.message}`;
             statusCode = 401; // Or 403 Forbidden
