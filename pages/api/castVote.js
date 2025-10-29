@@ -1,14 +1,10 @@
-// NO firebase-admin import here!
-import { createClient } from '@supabase/supabase-js' // Supabase for DB and Auth check
+import { createClient } from '@supabase/supabase-js';
 import { ethers } from 'ethers'; // Using Ethers v5
 
-// --- Supabase Admin Client ---
+// --- Supabase Admin Client (Same as before) ---
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY
-if (!supabaseUrl || !supabaseServiceKey) {
-    console.error("CRITICAL ERROR: Supabase URL or Service Role Key missing in API route (castVote).")
-    throw new Error("Server configuration error: Supabase credentials missing.")
-}
+if (!supabaseUrl || !supabaseServiceKey) throw new Error("Server config error: Supabase credentials missing.")
 const supabaseAdmin = createClient(supabaseUrl, supabaseServiceKey)
 // --- End Supabase ---
 
@@ -19,15 +15,21 @@ const CONTRACT_ADDRESS = process.env.NEXT_PUBLIC_CONTRACT_ADDRESS;
 const RPC_URL = process.env.NEXT_PUBLIC_RPC_URL;
 let CONTRACT_ABI;
 try {
-    const abiString = process.env.NEXT_PUBLIC_CONTRACT_ABI;
-    console.log("Raw NEXT_PUBLIC_CONTRACT_ABI string:", abiString?.substring(0, 100), "...");
-    if (!abiString) throw new Error("NEXT_PUBLIC_CONTRACT_ABI environment variable is not set or empty.");
-    CONTRACT_ABI = JSON.parse(abiString);
-    console.log("Successfully parsed CONTRACT_ABI.");
+    const abiBase64 = process.env.NEXT_PUBLIC_CONTRACT_ABI; // Get raw base64 string
+    console.log("Raw NEXT_PUBLIC_CONTRACT_ABI (Base64):", abiBase64?.substring(0, 50), "..."); // Log start
+    if (!abiBase64) throw new Error("NEXT_PUBLIC_CONTRACT_ABI environment variable is not set or empty.");
+
+    // --- *** NEW: Decode Base64 *** ---
+    const abiString = Buffer.from(abiBase64, 'base64').toString('utf-8');
+    // --- *** END NEW *** ---
+
+    console.log("Decoded ABI string:", abiString?.substring(0, 100), "..."); // Log decoded start
+    CONTRACT_ABI = JSON.parse(abiString); // Parse the decoded string
+    console.log("Successfully parsed decoded CONTRACT_ABI.");
 } catch (e) {
-    console.error("Error parsing CONTRACT_ABI:", e.message);
-    console.error("Problematic ABI string (first 100 chars):", process.env.NEXT_PUBLIC_CONTRACT_ABI?.substring(0, 100));
-    throw new Error("Could not parse contract ABI. Check Vercel environment variable format.");
+    console.error("Error decoding/parsing CONTRACT_ABI:", e.message);
+    console.error("Problematic Base64 ABI string (first 50 chars):", process.env.NEXT_PUBLIC_CONTRACT_ABI?.substring(0, 50));
+    throw new Error("Could not decode/parse contract ABI. Check Vercel environment variable format (should be Base64).");
 }
 let provider, wallet, contract;
 try {
@@ -42,79 +44,47 @@ try {
 // --- End Blockchain Config ---
 
 
-// --- API Handler ---
+// --- API Handler (Rest is the same) ---
 export default async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method Not Allowed' });
-
-  let userId = null; // Define userId outside try block for logging scope
+  let userId = null;
   try {
-    // --- Verify Supabase JWT Token ---
+    // Verify Supabase Token... (same as before)
     const token = req.headers.authorization?.split('Bearer ')[1];
-    if (!token) { return res.status(401).json({ error: 'Authentication required.' }); }
-
+    if (!token) { return res.status(401).json({ error: 'Auth required.' }); }
     const { data: { user }, error: userError } = await supabaseAdmin.auth.getUser(token);
-
-    if (userError) { console.error("Supabase token verification error:", userError); return res.status(401).json({ error: `Authentication failed: ${userError.message}` }); }
-    if (!user) { return res.status(401).json({ error: 'Authentication failed: Invalid token or user not found.' }); }
+    if (userError || !user) { console.error("Token verification error:", userError); return res.status(401).json({ error: `Auth failed: ${userError?.message || 'Invalid token'}` }); }
     userId = user.id;
-    console.log("Verified Supabase user:", userId, user.email);
-    // --- End Verification ---
+    console.log("Verified Supabase user:", userId);
 
-
-    // 3. Get vote data
+    // Get vote data... (same as before)
     const { electionId, candidateId } = req.body;
-    if (electionId === undefined || candidateId === undefined) return res.status(400).json({ error: 'electionId and candidateId are required.' });
-    console.log(`Received vote for Election ${electionId}, Candidate ${candidateId} from User ${userId}`);
+    if (electionId === undefined || candidateId === undefined) return res.status(400).json({ error: 'electionId and candidateId required.' });
+    console.log(`Vote for Election ${electionId}, Candidate ${candidateId} from User ${userId}`);
 
-    // 4. Check Supabase DB
-    const { data: voterData, error: dbError } = await supabaseAdmin
-        .from('voters')
-        .select('has_voted_election_1')
-        .eq('id', userId)
-        .single();
+    // Check Supabase DB... (same as before)
+    const { data: voterData, error: dbError } = await supabaseAdmin.from('voters').select('has_voted_election_1').eq('id', userId).single();
+    if (dbError && dbError.code !== 'PGRST116') { console.error("DB select error:", dbError); return res.status(500).json({ error: 'DB error checking voter status.' }); }
+    if (!voterData) { console.error("Voter not found:", userId); return res.status(404).json({ error: 'Voter record not found.' }); }
+    if (voterData.has_voted_election_1 === true) { console.warn("User already voted:", userId); return res.status(400).json({ error: 'Already voted.' }); }
+    console.log("User eligible.");
 
-    if (dbError && dbError.code !== 'PGRST116') { // Ignore row not found error here, handle below
-        console.error("Supabase DB select error:", dbError);
-        return res.status(500).json({ error: 'Database error checking voter status.' });
-    }
-    if (!voterData) { // If row not found
-        console.error("Voter document not found:", userId);
-        return res.status(404).json({ error: 'Voter registration record not found in database.' });
-    }
-    if (voterData.has_voted_election_1 === true) {
-      console.warn("User has already voted:", userId);
-      return res.status(400).json({ error: 'You have already voted.' });
-    }
-    console.log("User is eligible to vote.");
-
-    // 5. Send vote to Blockchain
+    // Send vote to Blockchain... (same as before)
     const gasOverrides = { maxPriorityFeePerGas: ethers.utils.parseUnits('30', 'gwei'), maxFeePerGas: ethers.utils.parseUnits('100', 'gwei') };
-    console.log(`Submitting vote to contract ${CONTRACT_ADDRESS} with gas overrides...`);
+    console.log(`Submitting vote to contract ${CONTRACT_ADDRESS}...`);
     const tx = await contract.recordVote(electionId, candidateId, gasOverrides);
-    console.log("Transaction sent, waiting for confirmation...");
+    console.log("Tx sent, waiting...");
     await tx.wait();
     console.log(`Vote successful! Hash: ${tx.hash}`);
 
-    // 6. Update Supabase DB
-    const { error: updateError } = await supabaseAdmin
-        .from('voters')
-        .update({ has_voted_election_1: true, vote_hash_election_1: tx.hash })
-        .eq('id', userId);
+    // Update Supabase DB... (same as before)
+    const { error: updateError } = await supabaseAdmin.from('voters').update({ has_voted_election_1: true, vote_hash_election_1: tx.hash }).eq('id', userId);
+    if (updateError) { console.error("CRITICAL: Failed Supabase update:", updateError); } else { console.log("Supabase updated:", userId); }
 
-     if (updateError) { console.error("CRITICAL: Failed to update voter status in Supabase after successful vote:", updateError); }
-     else { console.log("Supabase 'voters' table updated for user:", userId); }
-
-    // 7. Send success
+    // Send success... (same as before)
     res.status(200).json({ success: true, transactionHash: tx.hash });
 
-  } catch (error) { // Catch errors from blockchain or token verification
-    console.error('Error in castVote API execution:', error);
-    let errorMessage = 'An unknown server error occurred during voting.';
-    let statusCode = 500;
-     if (error instanceof Error && error.code) { /* ... keep blockchain error handling ... */
-         switch(error.code) { case ethers.errors.CALL_EXCEPTION: case 'CALL_EXCEPTION': errorMessage = "Vote failed on-chain."; console.error("Blockchain CALL_EXCEPTION:", error.reason); break; case 'UNPREDICTABLE_GAS_LIMIT': errorMessage = "Cannot estimate gas."; console.error("Blockchain UNPREDICTABLE_GAS_LIMIT:", error); break; case 'NETWORK_ERROR': errorMessage = "Network error communicating with blockchain."; console.error("Blockchain NETWORK_ERROR:", error); break; default: errorMessage = `Server error (${error.code}). Please try again.`; }
-     } else if (error instanceof Error) { errorMessage = error.message; }
-     console.error(`Error context - User ID: ${userId || 'N/A'}`);
-    res.status(statusCode).json({ error: errorMessage, code: error?.code });
+  } catch (error) { // Error handling... (same as before)
+    console.error('Error in castVote API:', error); let errorMessage = 'Unknown server error.'; let statusCode = 500; if (error instanceof Error && error.code) { switch(error.code) { case ethers.errors.CALL_EXCEPTION: case 'CALL_EXCEPTION': errorMessage = "Vote failed on-chain."; console.error("Blockchain CALL_EXCEPTION:", error.reason); break; case 'UNPREDICTABLE_GAS_LIMIT': errorMessage = "Cannot estimate gas."; console.error("Blockchain UNPREDICTABLE_GAS_LIMIT:", error); break; case 'NETWORK_ERROR': errorMessage = "Blockchain network error."; console.error("Blockchain NETWORK_ERROR:", error); break; default: errorMessage = `Server error (${error.code}).`; } } else if (error instanceof Error) { errorMessage = error.message; } console.error(`Error context - User ID: ${userId || 'N/A'}`); res.status(statusCode).json({ error: errorMessage, code: error?.code });
   }
 }
