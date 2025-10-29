@@ -1,79 +1,51 @@
-import * as admin from 'firebase-admin';
+import { createClient } from '@supabase/supabase-js'
 
-// --- NEW: Load Service Account from Environment Variable ---
-let serviceAccount;
-try {
-    if (!process.env.FIREBASE_SERVICE_ACCOUNT_JSON) {
-        throw new Error("FIREBASE_SERVICE_ACCOUNT_JSON environment variable is not set.");
-    }
-    serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_JSON);
-} catch (e) {
-    console.error("Error parsing FIREBASE_SERVICE_ACCOUNT_JSON in getVoteDetails:", e);
-    throw new Error("Could not parse Firebase service account JSON. Check .env.local format and Vercel environment variables.");
-}
-// --- End NEW section ---
+// --- Supabase Admin Client ---
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
+const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY
+if (!supabaseUrl || !supabaseServiceKey) throw new Error("Server config error: Supabase credentials missing.")
+const supabaseAdmin = createClient(supabaseUrl, supabaseServiceKey)
+// --- End Supabase ---
 
-
-// Initialize Firebase Admin (if it's not already)
-if (!admin.apps.length) {
-   try {
-    admin.initializeApp({
-      credential: admin.credential.cert(serviceAccount), // Use parsed serviceAccount
-    });
-    console.log("Firebase Admin SDK Initialized Successfully in getVoteDetails.");
-  } catch (initError) {
-    console.error("Firebase Admin SDK Initialization Failed in getVoteDetails:", initError);
-     throw new Error('Firebase Admin SDK could not be initialized in getVoteDetails.');
-  }
-} else {
-     console.log("Firebase Admin SDK already initialized.");
-}
-
-const auth = admin.auth();
-const db = admin.firestore();
 
 export default async function handler(req, res) {
-  if (req.method !== 'GET') {
-    return res.status(405).json({ error: 'Method Not Allowed' });
-  }
+  if (req.method !== 'GET') return res.status(405).json({ error: 'Method Not Allowed' });
 
   try {
-    // 1. Get the user's ID Token
+    // --- Verify Supabase JWT Token ---
     const token = req.headers.authorization?.split('Bearer ')[1];
-    if (!token) {
-      return res.status(401).json({ error: 'Authentication required.' });
+    if (!token) return res.status(401).json({ error: 'Authentication required.' });
+
+    const { data: { user }, error: userError } = await supabaseAdmin.auth.getUser(token);
+    if (userError || !user) {
+        console.error("Supabase token verification error:", userError);
+        return res.status(401).json({ error: `Authentication failed: ${userError?.message || 'Invalid token'}` });
     }
+    const userId = user.id;
+    console.log("Verified Supabase user for getVoteDetails:", userId);
+    // --- End Verification ---
 
-    // 2. Verify token
-    const decodedToken = await auth.verifyIdToken(token);
-    const userId = decodedToken.uid;
 
-    // 3. Get the user's voter registration document
-    const voterDocRef = db.collection('voters').doc(userId);
-    const voterDoc = await voterDocRef.get();
+    // 3. Get the user's voter registration document from Supabase DB
+    const { data: voterData, error: dbError } = await supabaseAdmin
+        .from('voters')
+        .select('has_voted_election_1, vote_hash_election_1') // Select needed columns
+        .eq('id', userId) // Find the row where 'id' matches user's ID
+        .single(); // Expect only one row
 
-    if (!voterDoc.exists) {
-      // It's okay if the doc doesn't exist yet, just means they haven't registered/voted
-       return res.status(200).json({
-          hasVoted: false,
-          hash: null
-       });
-      // return res.status(404).json({ error: 'Voter registration not found.' });
+    if (dbError && dbError.code !== 'PGRST116') { // Ignore 'PGRST116' (Row not found)
+        console.error("Supabase DB select error:", dbError);
+        throw new Error(`Supabase DB error: ${dbError.message}`);
     }
 
     // 4. Send back their vote details
-    const data = voterDoc.data();
     res.status(200).json({
-      hasVoted: data.hasVoted_election_1 || false, // Default to false if field missing
-      hash: data.voteHash_election_1 || null // Send the hash, or null if it doesn't exist
+      hasVoted: voterData?.has_voted_election_1 || false,
+      hash: voterData?.vote_hash_election_1 || null
     });
 
   } catch (error) {
     console.error('Error in getVoteDetails:', error);
-    let errorMessage = 'An unknown error occurred.';
-    if (error instanceof Error) {
-        errorMessage = error.message;
-    }
-    res.status(500).json({ error: errorMessage });
+    res.status(500).json({ error: error.message || 'An unknown server error occurred.' });
   }
 }

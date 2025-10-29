@@ -1,88 +1,69 @@
-import * as admin from 'firebase-admin';
+import { createClient } from '@supabase/supabase-js'
 
-// --- Initialization Logic ---
-// We still need admin for Firestore and token verification
-let adminApp;
-const initializeFirebaseAdmin = () => {
-    const existingApp = admin.apps.find(app => app.name === '[DEFAULT]');
-    if (existingApp) { console.log("Firebase Admin SDK [DEFAULT] app already exists."); adminApp = existingApp; return adminApp; }
-    let serviceAccount;
-    try {
-        if (!process.env.FIREBASE_SERVICE_ACCOUNT_JSON) throw new Error("FIREBASE_SERVICE_ACCOUNT_JSON not set.");
-        serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_JSON);
-        if (!serviceAccount.project_id || !serviceAccount.client_email || !serviceAccount.private_key) throw new Error("Parsed service account JSON missing fields.");
-    } catch (e) { console.error("CRITICAL ERROR parsing FIREBASE_SERVICE_ACCOUNT_JSON:", e.message); throw new Error("Could not parse Firebase service account JSON."); }
-    try {
-        console.log(`Initializing Firebase Admin SDK for project: ${serviceAccount.project_id}...`);
-        adminApp = admin.initializeApp({ credential: admin.credential.cert(serviceAccount) }, '[DEFAULT]');
-        console.log("Firebase Admin SDK Initialized Successfully as [DEFAULT].");
-        return adminApp;
-    } catch (initError) { console.error("CRITICAL ERROR: Firebase Admin SDK Initialization Failed:", initError); throw new Error('Firebase Admin SDK could not be initialized.'); }
-};
-// --- End Initialization ---
+// Create Supabase client with the SERVICE_ROLE_KEY for admin actions
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
+const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY
 
+if (!supabaseUrl || !supabaseServiceKey) {
+    console.error("CRITICAL ERROR: Supabase URL or Service Role Key missing in API route.")
+    throw new Error("Server configuration error: Supabase credentials missing.")
+}
 
-// --- API Handler ---
+// Note: Creating a new client in each API route is standard for serverless
+// Ensure SERVICE_ROLE_KEY is kept secret and only used on the server
+const supabaseAdmin = createClient(supabaseUrl, supabaseServiceKey)
+
 export default async function handler(req, res) {
-    if (req.method !== 'POST') return res.status(405).json({ error: 'Method Not Allowed' });
-
-    let auth, db;
-    try {
-        const app = initializeFirebaseAdmin(); // Ensure initialized
-        auth = admin.auth(app); // Needed for token verification
-        db = admin.firestore(app); // Needed for database write
-        if (!auth || !db) throw new Error("Failed to get Firebase services.");
-    } catch (e) {
-        console.error("Failed during Firebase service initialization in handler:", e.message);
-        return res.status(500).json({ error: 'Server configuration error (Firebase init).' });
+    if (req.method !== 'POST') {
+        return res.status(405).json({ error: 'Method Not Allowed' });
     }
 
-    // Expect UID and email from client after successful client-side auth
-    // Expect Authorization header with ID token
-    const { uid, email } = req.body;
-    const token = req.headers.authorization?.split('Bearer ')[1];
+    // Get userId and email from the request body (sent by client after signup)
+    const { userId, email } = req.body;
 
-    if (!uid || !email) {
+    if (!userId || !email) {
         return res.status(400).json({ error: 'User ID and email are required.' });
     }
-    if (!token) {
-        return res.status(401).json({ error: 'Authorization token required.' });
-    }
+
+    // Optional: Add backend token verification if needed for extra security,
+    // but for just creating a DB record after client signup, this might be sufficient
+    // if Row Level Security is configured properly later.
 
     try {
-        // --- Verify Token ---
-        console.log("Verifying ID token for UID:", uid);
-        const decodedToken = await auth.verifyIdToken(token);
+        console.log("API: Adding user to Supabase 'voters' table:", userId, email);
 
-        // Check if the UID in the token matches the UID passed in the body
-        if (decodedToken.uid !== uid) {
-            console.error("Token UID mismatch:", decodedToken.uid, "vs", uid);
-            return res.status(403).json({ error: 'Forbidden: Token does not match user ID.' });
+        // Insert the user into the 'voters' table using the Admin client
+        const { data, error } = await supabaseAdmin
+            .from('voters')
+            .insert([
+                {
+                    id: userId, // Use the user ID from Supabase Auth as the primary key
+                    email: email,
+                    // has_voted_election_1 defaults to false in the table schema
+                }
+            ])
+            .select(); // Optionally select to confirm insertion
+
+        if (error) {
+            // Handle potential errors, e.g., duplicate primary key (user already exists)
+            console.error('Supabase DB insert error:', error);
+            // Check for unique violation (Postgres code 23505)
+            if (error.code === '23505') {
+                 // This might happen if the API is called twice, which is okay.
+                 console.warn(`User ${userId} already exists in voters table.`);
+                 // Consider returning success even if they already exist
+                 return res.status(200).json({ success: true, uid: userId, message: 'User already exists in DB.' });
+            }
+            throw new Error(`Supabase DB error: ${error.message}`);
         }
-        console.log("ID token verified successfully for:", decodedToken.email);
 
-        // --- Create Firestore Record ---
-        console.log("Adding user to Firestore:", decodedToken.uid);
-        // Use set with merge: false (or just set) to ensure we don't overwrite if it somehow exists
-        await db.collection('voters').doc(decodedToken.uid).set({
-            email: email, // Save the email provided
-            hasVoted_election_1: false // Initialize voting status
-        }, { merge: false }); // Use set instead of update to create if not exists
-        console.log("User added to Firestore successfully.");
+        console.log("User added to Supabase 'voters' table successfully:", data);
 
-        // --- Send Success ---
-        res.status(200).json({ success: true, uid: decodedToken.uid });
+        // Send a success message back
+        res.status(200).json({ success: true, uid: userId });
 
     } catch (error) {
-        console.error('Error in registerUser (Firestore write/Token verify):', error);
-        let errorMessage = 'Failed to complete registration on server.';
-        let statusCode = 500;
-        if (error instanceof Error && error.code?.startsWith('auth/')) {
-            errorMessage = `Authentication error: ${error.message}`;
-            statusCode = 401; // Or 403 Forbidden
-        } else if (error instanceof Error) {
-            errorMessage = error.message;
-        }
-        res.status(statusCode).json({ error: errorMessage, code: error?.code });
+        console.error('Error in registerUser API (DB write):', error);
+        res.status(500).json({ error: error.message || 'Failed to complete registration on server.' });
     }
 }

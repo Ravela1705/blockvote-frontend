@@ -1,77 +1,69 @@
-import * as admin from 'firebase-admin';
+import { createClient } from '@supabase/supabase-js'
 import { ethers } from 'ethers'; // Using Ethers v5
 
-// --- Initialization Logic (Same as registerUser.js) ---
-let adminApp;
-const initializeFirebaseAdmin = () => {
-    if (admin.apps.length > 0) { console.log("Firebase Admin SDK already initialized."); adminApp = admin.app(); return adminApp; }
-    let serviceAccount;
-    try {
-        if (!process.env.FIREBASE_SERVICE_ACCOUNT_JSON) throw new Error("FIREBASE_SERVICE_ACCOUNT_JSON not set.");
-        serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_JSON);
-        if (!serviceAccount.project_id || !serviceAccount.client_email || !serviceAccount.private_key) throw new Error("Parsed service account JSON missing fields.");
-    } catch (e) { console.error("CRITICAL ERROR parsing FIREBASE_SERVICE_ACCOUNT_JSON:", e.message); throw new Error("Could not parse Firebase service account JSON."); }
-    try {
-        console.log("Initializing Firebase Admin SDK...");
-        adminApp = admin.initializeApp({ credential: admin.credential.cert(serviceAccount) });
-        console.log("Firebase Admin SDK Initialized Successfully.");
-        return adminApp;
-    } catch (initError) { console.error("CRITICAL ERROR: Firebase Admin SDK Initialization Failed:", initError); throw new Error('Firebase Admin SDK could not be initialized.'); }
-};
-// --- End Initialization ---
-
+// --- Supabase Admin Client ---
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
+const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY
+if (!supabaseUrl || !supabaseServiceKey) throw new Error("Server config error: Supabase credentials missing.")
+const supabaseAdmin = createClient(supabaseUrl, supabaseServiceKey)
+// --- End Supabase ---
 
 // --- Blockchain Config (No changes needed here) ---
 const ADMIN_PRIVATE_KEY = process.env.ADMIN_PRIVATE_KEY;
 const CONTRACT_ADDRESS = process.env.NEXT_PUBLIC_CONTRACT_ADDRESS;
 const RPC_URL = process.env.NEXT_PUBLIC_RPC_URL;
-let CONTRACT_ABI;
-try { CONTRACT_ABI = JSON.parse(process.env.NEXT_PUBLIC_CONTRACT_ABI); } catch (e) { console.error("Error parsing CONTRACT_ABI:", e); throw new Error("Could not parse contract ABI."); }
+let CONTRACT_ABI; try { CONTRACT_ABI = JSON.parse(process.env.NEXT_PUBLIC_CONTRACT_ABI); } catch (e) { throw new Error("Could not parse contract ABI."); }
 let provider, wallet, contract;
-try {
-    provider = new ethers.providers.JsonRpcProvider(RPC_URL);
-    wallet = new ethers.Wallet(ADMIN_PRIVATE_KEY, provider);
-    contract = new ethers.Contract(CONTRACT_ADDRESS, CONTRACT_ABI, wallet);
-    console.log("Connected to blockchain and contract.");
-} catch(e){ console.error("Error connecting to blockchain:", e); throw new Error("Could not connect to blockchain."); }
+try { provider = new ethers.providers.JsonRpcProvider(RPC_URL); wallet = new ethers.Wallet(ADMIN_PRIVATE_KEY, provider); contract = new ethers.Contract(CONTRACT_ADDRESS, CONTRACT_ABI, wallet); console.log("Connected to blockchain."); } catch(e){ console.error("Blockchain connection error:", e); throw new Error("Could not connect to blockchain."); }
 // --- End Config ---
 
 
-// --- API Handler ---
 export default async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method Not Allowed' });
 
-  let auth, db;
+  let userId = null;
   try {
-      const app = initializeFirebaseAdmin(); // Ensure initialized
-      auth = admin.auth(app);
-      db = admin.firestore(app);
-      if (!auth || !db) throw new Error("Failed to get Firebase services.");
-  } catch (e) {
-      console.error("Failed during Firebase service initialization in handler:", e.message);
-      return res.status(500).json({ error: 'Server configuration error (Firebase init).' });
-  }
-
-  try {
-    // 1. Get Token
+    // --- *** NEW: Verify Supabase JWT Token *** ---
     const token = req.headers.authorization?.split('Bearer ')[1];
     if (!token) { return res.status(401).json({ error: 'Authentication required.' }); }
 
-    // 2. Verify token
-    const decodedToken = await auth.verifyIdToken(token);
-    const userId = decodedToken.uid;
-    console.log("Verified user:", userId);
+    // Use Supabase Admin client to verify the token and get user data
+    const { data: { user }, error: userError } = await supabaseAdmin.auth.getUser(token);
+
+    if (userError) {
+        console.error("Supabase token verification error:", userError);
+        return res.status(401).json({ error: `Authentication failed: ${userError.message}` });
+    }
+    if (!user) {
+        return res.status(401).json({ error: 'Authentication failed: Invalid token or user not found.' });
+    }
+    userId = user.id; // Get the authenticated user's ID
+    console.log("Verified Supabase user:", userId, user.email);
+    // --- *** END NEW *** ---
+
 
     // 3. Get vote data
     const { electionId, candidateId } = req.body;
-    if (electionId === undefined || candidateId === undefined) { return res.status(400).json({ error: 'electionId and candidateId are required.' }); }
+    if (electionId === undefined || candidateId === undefined) return res.status(400).json({ error: 'electionId and candidateId are required.' });
     console.log(`Received vote for Election ${electionId}, Candidate ${candidateId} from User ${userId}`);
 
-    // 4. Check Firestore
-    const voterDocRef = db.collection('voters').doc(userId);
-    const voterDoc = await voterDocRef.get();
-    if (!voterDoc.exists) { console.error("Voter document not found:", userId); return res.status(404).json({ error: 'Voter registration not found.' }); }
-    if (voterDoc.data().hasVoted_election_1 === true) { console.warn("User already voted:", userId); return res.status(400).json({ error: 'You have already voted.' }); }
+    // 4. Check Supabase DB to see if they've already voted
+    const { data: voterData, error: dbError } = await supabaseAdmin
+        .from('voters')
+        .select('has_voted_election_1') // Select the specific column
+        .eq('id', userId) // Find the row where 'id' matches the authenticated user's ID
+        .single(); // Expect only one row
+
+    if (dbError || !voterData) {
+        console.error("Supabase DB select error or voter not found:", dbError);
+        // If voter not found, it means they didn't complete registration properly
+        return res.status(404).json({ error: 'Voter registration record not found in database.' });
+    }
+
+    if (voterData.has_voted_election_1 === true) {
+      console.warn("User has already voted:", userId);
+      return res.status(400).json({ error: 'You have already voted.' });
+    }
     console.log("User is eligible to vote.");
 
     // 5. Send vote to Blockchain
@@ -82,38 +74,38 @@ export default async function handler(req, res) {
     await tx.wait();
     console.log(`Vote successful! Hash: ${tx.hash}`);
 
-    // 6. Update Firestore
-    await voterDocRef.update({ hasVoted_election_1: true, voteHash_election_1: tx.hash });
-    console.log("Firestore updated for user:", userId);
+    // 6. Update Supabase DB
+    const { error: updateError } = await supabaseAdmin
+        .from('voters')
+        .update({
+            has_voted_election_1: true,
+            vote_hash_election_1: tx.hash // Save the hash
+        })
+        .eq('id', userId); // Update the row matching the user ID
+
+     if (updateError) {
+        // Log the error but maybe don't fail the whole request?
+        // Depends on desired behavior if DB update fails after successful vote.
+        console.error("CRITICAL: Failed to update voter status in Supabase after successful vote:", updateError);
+        // Potentially return success but include a warning
+        // return res.status(500).json({ error: 'Vote recorded on blockchain, but failed to update database record.' });
+     } else {
+        console.log("Supabase 'voters' table updated for user:", userId);
+     }
+
 
     // 7. Send success
     res.status(200).json({ success: true, transactionHash: tx.hash });
 
-  } catch (error) {
+  } catch (error) { // Catch errors from blockchain or token verification
     console.error('Error in castVote API execution:', error);
     let errorMessage = 'An unknown server error occurred during voting.';
     let statusCode = 500;
-     if (error instanceof Error && error.code) {
-         switch(error.code) {
-            case ethers.errors.CALL_EXCEPTION:
-            case 'CALL_EXCEPTION':
-                errorMessage = "Vote failed on-chain. Possible reasons: Election ended, invalid candidate, or contract issue.";
-                console.error("Blockchain CALL_EXCEPTION details:", error.reason, error.transaction);
-                break;
-            case 'UNPREDICTABLE_GAS_LIMIT':
-                 errorMessage = "Cannot estimate gas. Possible contract error or network issue.";
-                 console.error("Blockchain UNPREDICTABLE_GAS_LIMIT details:", error);
-                 break;
-            case 'NETWORK_ERROR':
-                 errorMessage = "Network error communicating with the blockchain.";
-                 console.error("Blockchain NETWORK_ERROR details:", error);
-                 break;
-            default:
-                 errorMessage = `Blockchain error (${error.code}): ${error.message}`;
-         }
-     } else if (error instanceof Error) {
-         errorMessage = error.message;
-     }
+     if (error instanceof Error && error.code) { /* ... keep blockchain error handling ... */
+         switch(error.code) { case ethers.errors.CALL_EXCEPTION: case 'CALL_EXCEPTION': errorMessage = "Vote failed on-chain."; console.error("Blockchain CALL_EXCEPTION:", error.reason); break; case 'UNPREDICTABLE_GAS_LIMIT': errorMessage = "Cannot estimate gas."; console.error("Blockchain UNPREDICTABLE_GAS_LIMIT:", error); break; case 'NETWORK_ERROR': errorMessage = "Network error communicating with blockchain."; console.error("Blockchain NETWORK_ERROR:", error); break; default: errorMessage = `Blockchain error (${error.code})`; }
+     } else if (error instanceof Error) { errorMessage = error.message; }
+     // Ensure userId is included in error context if available
+     console.error(`Error context - User ID: ${userId || 'N/A'}`);
     res.status(statusCode).json({ error: errorMessage, code: error?.code });
   }
 }
