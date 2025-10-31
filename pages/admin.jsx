@@ -6,19 +6,17 @@ import { Buffer } from 'buffer'; // Import Buffer
 import { 
   Plus, Trash2, Loader2, AlertTriangle, CheckCircle, ListPlus, Clock, 
   LogIn, User, Shield, BarChart3, List, LogOut, 
-  RefreshCw // <-- *** THIS IS THE FIX ***
+  RefreshCw // <-- *** FIX: Imported RefreshCw ***
 } from 'lucide-react';
 
 // --- Reusable Components ---
 const LoadingSpinner = () => <Loader2 size={16} className="animate-spin" />;
 
 // --- Blockchain Helper ---
-// We need this helper here to fetch results
 const getContract = () => {
     try {
         const abiBase64 = process.env.NEXT_PUBLIC_CONTRACT_ABI;
         if (!abiBase64) throw new Error("Contract ABI env var missing (NEXT_PUBLIC_CONTRACT_ABI)");
-        // Use Buffer for robust decoding (works in browser + server)
         const abiString = Buffer.from(abiBase64, 'base64').toString('utf-8');
         const contractABI = JSON.parse(abiString);
         const provider = new ethers.providers.JsonRpcProvider(process.env.NEXT_PUBLIC_RPC_URL);
@@ -105,9 +103,7 @@ const AdminLogin = () => {
                         Login
                     </button>
                 </form>
-                <p className="text-center text-xs text-gray-500 mt-6">
-                    Note: Admin accounts are regular users. Access is granted if the logged-in email matches the ADMIN_EMAIL set in Vercel.
-                </p>
+                {/* Removed the confusing note about student registration */}
             </motion.div>
         </div>
     );
@@ -345,31 +341,55 @@ export default function AdminPage() {
     const [isAdmin, setIsAdmin] = useState(false);
 
     useEffect(() => {
-        // This function checks if the logged-in user is the admin
-        const checkAdmin = (user) => {
-            const adminEmail = process.env.NEXT_PUBLIC_ADMIN_EMAIL;
-            if (!adminEmail) {
-                console.error("CRITICAL: NEXT_PUBLIC_ADMIN_EMAIL is not set in environment variables.");
-                return false;
+        // --- *** THIS IS THE NEW, CORRECT LOGIC *** ---
+        // This function checks if the logged-in user is in our new 'admins' table
+        const checkAdmin = async (user) => {
+            if (!user) {
+                setIsAdmin(false);
+                return;
             }
-            // You can use ANY email you want, as long as it's in the .env file
-            return user?.email === adminEmail;
+            try {
+                // Query the 'admins' table for a row where the id matches the logged-in user's id
+                const { data, error } = await supabase
+                    .from('admins')
+                    .select('id')
+                    .eq('id', user.id)
+                    .single(); // Get just one row
+                
+                if (error && error.code !== 'PGRST116') { // PGRST116 = row not found
+                    console.error("Error checking admin status:", error);
+                    setIsAdmin(false);
+                } else if (data) {
+                    // User was found in the 'admins' table!
+                    console.log("Admin verified:", data);
+                    setIsAdmin(true);
+                } else {
+                    // User was not found in 'admins' table
+                    console.log("User is not an admin.");
+                    setIsAdmin(false);
+                }
+            } catch (err) {
+                console.error("Error during admin check:", err);
+                setIsAdmin(false);
+            }
         };
+        // --- *** END NEW LOGIC *** ---
+
         
-        // 1. Get initial session
-        supabase.auth.getSession().then(({ data: { session: initialSession } }) => {
+        // 1. Get initial session and check admin status
+        supabase.auth.getSession().then(async ({ data: { session: initialSession } }) => {
             console.log("Admin Page: Initial session check", initialSession?.user?.email);
             setSession(initialSession);
-            setIsAdmin(checkAdmin(initialSession?.user));
+            await checkAdmin(initialSession?.user); // Wait for the admin check
             setLoading(false);
         });
 
         // 2. Listen for auth changes
         const { data: { subscription } } = supabase.auth.onAuthStateChange(
-          (_event, currentSession) => {
+          async (_event, currentSession) => {
             console.log("Admin Page: Auth state changed", _event, currentSession?.user?.email);
             setSession(currentSession);
-            setIsAdmin(checkAdmin(currentSession?.user));
+            await checkAdmin(currentSession?.user); // Wait for the admin check
             setLoading(false);
           }
         );

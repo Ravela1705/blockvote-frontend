@@ -33,8 +33,36 @@ const callGemini = async (prompt, retries = 3, delay = 1000) => {
      try { const payload = { contents: [{ parts: [{ text: prompt }] }] }; const response = await fetch(GEMINI_API_URL, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }); if (!response.ok) { if ((response.status === 429 || response.status >= 500) && retries > 0) { await new Promise(resolve => setTimeout(resolve, delay)); return callGemini(prompt, retries - 1, delay * 2); } throw new Error(`API Error: ${response.statusText}`); } const result = await response.json(); const candidate = result.candidates?.[0]; if (candidate?.content?.parts?.[0]?.text) return candidate.content.parts[0].text; console.warn("Unexpected Gemini response:", result); return "Could not generate response."; } catch (error) { console.error("Error calling Gemini:", error); if (retries > 0) { await new Promise(resolve => setTimeout(resolve, delay)); return callGemini(prompt, retries - 1, delay * 2); } return `Error: ${error.message}.`; }
 };
 
-// --- 3. BLOCKCHAIN HELPER (REMOVED from client) ---
-// We no longer need getContract() on the client side for fetching.
+// --- 3. BLOCKCHAIN HELPER ---
+/**
+ * Gets a read-only provider and contract instance.
+ * Decodes the ABI from Base64.
+ */
+const getContract = () => {
+    try {
+        const abiBase64 = process.env.NEXT_PUBLIC_CONTRACT_ABI;
+        if (!abiBase64) throw new Error("Contract ABI env var missing (NEXT_PUBLIC_CONTRACT_ABI)");
+        
+        // --- *** THIS IS THE FIX *** ---
+        // Use Buffer for robust decoding. This works in both Node.js (server)
+        // and the browser (because we imported it at the top of the file).
+        const abiString = Buffer.from(abiBase64, 'base64').toString('utf-8');
+        // --- *** END FIX *** ---
+          
+        const contractABI = JSON.parse(abiString);
+        
+        const provider = new ethers.providers.JsonRpcProvider(process.env.NEXT_PUBLIC_RPC_URL);
+        const contract = new ethers.Contract(
+            process.env.NEXT_PUBLIC_CONTRACT_ADDRESS,
+            contractABI,
+            provider
+        );
+        return contract;
+    } catch (e) {
+        console.error("CRITICAL ERROR getting contract instance:", e.message);
+        return null; // Return null if setup fails
+    }
+};
 
 // --- Reusable Components ---
 const LoadingSpinner = () => <Loader2 size={16} className="animate-spin" />;
