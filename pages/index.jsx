@@ -6,7 +6,11 @@ import {
 } from 'lucide-react';
 // Import Supabase client
 import { createClient } from '@supabase/supabase-js'
-// --- We NO LONGER need ethers or Buffer here ---
+// Import ethers
+import { ethers } from 'ethers'; // For blockchain interaction
+// --- *** THIS IS THE FIX (Part 1) *** ---
+// Import Buffer to use it reliably in the browser
+import { Buffer } from 'buffer';
 
 // --- 1. SUPABASE CLIENT INITIALIZATION ---
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
@@ -23,15 +27,43 @@ const GEMINI_API_URL = `https://generativelanguage.googleapis.com/v1beta/models/
 
 // Gemini API Helper Function
 const callGemini = async (prompt, retries = 3, delay = 1000) => {
-    if (!GEMINI_API_KEY || GEMINI_API_KEY === "YOUR_GEMINI_KEY" || !GEMINI_API_KEY.trim()) { 
-         console.warn("Gemini API key not set.");
+    if (!GEMINI_API_KEY || GEMINI_API_KEY === "YOUR_GEMINI_KEY" || !GEMINI_API_KEY.trim()) { // Check placeholder or empty
+         console.warn("Gemini API key not set in environment variables (NEXT_PUBLIC_GEMINI_API_KEY).");
          return "Gemini API key not set.";
     }
      try { const payload = { contents: [{ parts: [{ text: prompt }] }] }; const response = await fetch(GEMINI_API_URL, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }); if (!response.ok) { if ((response.status === 429 || response.status >= 500) && retries > 0) { await new Promise(resolve => setTimeout(resolve, delay)); return callGemini(prompt, retries - 1, delay * 2); } throw new Error(`API Error: ${response.statusText}`); } const result = await response.json(); const candidate = result.candidates?.[0]; if (candidate?.content?.parts?.[0]?.text) return candidate.content.parts[0].text; console.warn("Unexpected Gemini response:", result); return "Could not generate response."; } catch (error) { console.error("Error calling Gemini:", error); if (retries > 0) { await new Promise(resolve => setTimeout(resolve, delay)); return callGemini(prompt, retries - 1, delay * 2); } return `Error: ${error.message}.`; }
 };
 
-// --- 3. BLOCKCHAIN HELPER (REMOVED) ---
-// We no longer need getContract() on the client side.
+// --- 3. BLOCKCHAIN HELPER ---
+/**
+ * Gets a read-only provider and contract instance.
+ * Decodes the ABI from Base64.
+ */
+const getContract = () => {
+    try {
+        const abiBase64 = process.env.NEXT_PUBLIC_CONTRACT_ABI;
+        if (!abiBase64) throw new Error("Contract ABI env var missing (NEXT_PUBLIC_CONTRACT_ABI)");
+        
+        // --- *** THIS IS THE FIX (Part 2) *** ---
+        // Use Buffer for robust decoding. This works in both Node.js (server)
+        // and the browser (because we imported it at the top of the file).
+        const abiString = Buffer.from(abiBase64, 'base64').toString('utf-8');
+        // --- *** END FIX *** ---
+          
+        const contractABI = JSON.parse(abiString);
+        
+        const provider = new ethers.providers.JsonRpcProvider(process.env.NEXT_PUBLIC_RPC_URL);
+        const contract = new ethers.Contract(
+            process.env.NEXT_PUBLIC_CONTRACT_ADDRESS,
+            contractABI,
+            provider
+        );
+        return contract;
+    } catch (e) {
+        console.error("CRITICAL ERROR getting contract instance:", e.message);
+        return null; // Return null if setup fails
+    }
+};
 
 // --- Reusable Components ---
 const LoadingSpinner = () => <Loader2 size={16} className="animate-spin" />;
@@ -408,6 +440,48 @@ export default function App() {
     const [voterData, setVoterData] = useState(null);
     const [appLoading, setAppLoading] = useState(true);
 
+    // --- *** UPDATED: Use new /api/getElections route *** ---
+    const fetchAllElectionData = async () => {
+        console.log("Fetching ALL election data from API...");
+        try {
+            const response = await fetch('/api/getElections');
+            if (!response.ok) {
+                throw new Error(`Failed to fetch elections: ${response.statusText}`);
+            }
+            const data = await response.json();
+            console.log("Fetched all elections:", data.allElections);
+            return data.allElections || []; // Return elections array
+        } catch (err) {
+            console.error("Failed to fetch election count:", err);
+            return []; // Return empty on error
+        }
+    };
+    // --- *** END UPDATE *** ---
+
+
+    const fetchVoterData = async () => {
+        console.log("Fetching voter data...");
+        if (!supabase) return null;
+        
+        const { data: { session }, error: sessionError } = await supabase.auth.getSession();
+        if (sessionError || !session) { console.error("Session error:", sessionError); return null; }
+        const token = session.access_token;
+
+        try {
+            const response = await fetch('/api/getVoteDetails', {
+                method: 'GET',
+                headers: { 'Authorization': `Bearer ${token}` }
+            });
+            if (!response.ok) throw new Error('Failed to fetch vote details.');
+            const data = await response.json(); // Should return { votes_cast: {...} }
+            console.log("Fetched voter data:", data.votes_cast);
+            return data.votes_cast;
+        } catch (err) {
+            console.error("Error fetching voter data:", err);
+            return null;
+        }
+    };
+
     const loadAppData = useCallback(async (sessionUser) => {
         if (!sessionUser) {
              console.log("loadAppData: No user, skipping fetch.");
@@ -417,29 +491,20 @@ export default function App() {
         console.log("loadAppData: User found, fetching data...");
         setAppLoading(true);
         try {
-            // --- *** UPDATED: Fetch from new API route *** ---
-            const [electionsResponse, votes] = await Promise.all([
-                fetch('/api/getElections'), // Call our new API route
+            const [elections, votes] = await Promise.all([
+                fetchAllElectionData(),
                 fetchVoterData()
             ]);
-
-            if (!electionsResponse.ok) {
-                throw new Error("Failed to fetch elections from API");
-            }
-            const electionsData = await electionsResponse.json();
-            // --- *** END UPDATE *** ---
-
-            setAllElections(electionsData.allElections || []); // Set from API response
+            setAllElections(elections);
             setVoterData(votes);
         } catch (error) {
             console.error("Error loading app data:", error);
         } finally {
             setAppLoading(false);
         }
-    }, []); // Removed session dependency
+    }, []);
 
     useEffect(() => {
-        // Run once on mount
         supabase.auth.getSession().then(({ data: { session: initialSession } }) => {
             console.log("Initial session check:", initialSession?.user?.email);
             if (loadingAuth) {
@@ -469,9 +534,8 @@ export default function App() {
             subscription?.unsubscribe(); 
         };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, []); // Only run once on mount
+    }, []);
 
-    // Effect to load data *after* session is confirmed
     useEffect(() => {
         if (!loadingAuth) {
             if (session?.user) {
