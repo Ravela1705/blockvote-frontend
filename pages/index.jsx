@@ -8,12 +8,17 @@ import {
 import { createClient } from '@supabase/supabase-js'
 // Import ethers
 import { ethers } from 'ethers'; // For blockchain interaction
-// Import Buffer for robust Base64 decoding *on the server*
+// --- *** THIS IS THE FIX (Part 1) *** ---
+// Import Buffer to use it reliably in the browser
 import { Buffer } from 'buffer';
 
 // --- 1. SUPABASE CLIENT INITIALIZATION ---
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
 const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
+
+if (!supabaseUrl || !supabaseAnonKey) {
+  console.error("CRITICAL ERROR: Supabase URL or Anon Key is missing. Check .env.local and Vercel environment variables.")
+}
 export const supabase = createClient(supabaseUrl, supabaseAnonKey)
 
 // --- 2. GEMINI API CONFIGURATION ---
@@ -22,7 +27,10 @@ const GEMINI_API_URL = `https://generativelanguage.googleapis.com/v1beta/models/
 
 // Gemini API Helper Function
 const callGemini = async (prompt, retries = 3, delay = 1000) => {
-    if (!GEMINI_API_KEY || GEMINI_API_KEY === "YOUR_GEMINI_KEY" || !GEMINI_API_KEY.trim()) { console.warn("Gemini API key not set."); return "Gemini API key not set."; }
+    if (!GEMINI_API_KEY || GEMINI_API_KEY === "YOUR_GEMINI_KEY" || !GEMINI_API_KEY.trim()) {
+         console.warn("Gemini API key not set in environment variables (NEXT_PUBLIC_GEMINI_API_KEY).");
+         return "Gemini API key not set.";
+    }
      try { const payload = { contents: [{ parts: [{ text: prompt }] }] }; const response = await fetch(GEMINI_API_URL, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }); if (!response.ok) { if ((response.status === 429 || response.status >= 500) && retries > 0) { await new Promise(resolve => setTimeout(resolve, delay)); return callGemini(prompt, retries - 1, delay * 2); } throw new Error(`API Error: ${response.statusText}`); } const result = await response.json(); const candidate = result.candidates?.[0]; if (candidate?.content?.parts?.[0]?.text) return candidate.content.parts[0].text; console.warn("Unexpected Gemini response:", result); return "Could not generate response."; } catch (error) { console.error("Error calling Gemini:", error); if (retries > 0) { await new Promise(resolve => setTimeout(resolve, delay)); return callGemini(prompt, retries - 1, delay * 2); } return `Error: ${error.message}.`; }
 };
 
@@ -36,16 +44,10 @@ const getContract = () => {
         const abiBase64 = process.env.NEXT_PUBLIC_CONTRACT_ABI;
         if (!abiBase64) throw new Error("Contract ABI env var missing (NEXT_PUBLIC_CONTRACT_ABI)");
         
-        // --- *** THIS IS THE FIX *** ---
-        // We must check if we are in the browser or on the server
-        let abiString;
-        if (typeof window === 'undefined') {
-          // We are on the server (Node.js), use Buffer
-          abiString = Buffer.from(abiBase64, 'base64').toString('utf-8');
-        } else {
-          // We are in the browser, use atob()
-          abiString = atob(abiBase64); 
-        }
+        // --- *** THIS IS THE FIX (Part 2) *** ---
+        // Use Buffer for robust decoding. This works in both Node.js (server)
+        // and the browser (because we imported it at the top of the file).
+        const abiString = Buffer.from(abiBase64, 'base64').toString('utf-8');
         // --- *** END FIX *** ---
           
         const contractABI = JSON.parse(abiString);
@@ -59,7 +61,6 @@ const getContract = () => {
         return contract;
     } catch (e) {
         console.error("CRITICAL ERROR getting contract instance:", e.message);
-        // This error will now appear in the *browser* console
         return null; // Return null if setup fails
     }
 };
