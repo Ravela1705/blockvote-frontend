@@ -5,7 +5,8 @@ import { ethers } from 'ethers'; // Import ethers
 import { Buffer } from 'buffer'; // Import Buffer
 import { 
   Plus, Trash2, Loader2, AlertTriangle, CheckCircle, ListPlus, Clock, 
-  LogIn, User, Shield, BarChart3, List, LogOut
+  LogIn, User, Shield, BarChart3, List, LogOut, 
+  RefreshCw // <-- *** THIS IS THE FIX ***
 } from 'lucide-react';
 
 // --- Reusable Components ---
@@ -17,6 +18,7 @@ const getContract = () => {
     try {
         const abiBase64 = process.env.NEXT_PUBLIC_CONTRACT_ABI;
         if (!abiBase64) throw new Error("Contract ABI env var missing (NEXT_PUBLIC_CONTRACT_ABI)");
+        // Use Buffer for robust decoding (works in browser + server)
         const abiString = Buffer.from(abiBase64, 'base64').toString('utf-8');
         const contractABI = JSON.parse(abiString);
         const provider = new ethers.providers.JsonRpcProvider(process.env.NEXT_PUBLIC_RPC_URL);
@@ -99,10 +101,13 @@ const AdminLogin = () => {
                         disabled={loading}
                         className="w-full py-3 px-4 bg-gradient-to-r from-indigo-600 to-purple-600 text-white font-semibold rounded-lg shadow-lg hover:shadow-indigo-500/30 transform hover:-translate-y-0.5 transition-all duration-300 flex items-center justify-center disabled:opacity-50"
                     >
-                        {loading ? <Loader2 className="w-5 h-5 animate-spin" /> : <LogIn className="w-5 h-5 mr-2" />}
+                        {loading ? <LoadingSpinner /> : <LogIn className="w-5 h-5 mr-2" />}
                         Login
                     </button>
                 </form>
+                <p className="text-center text-xs text-gray-500 mt-6">
+                    Note: Admin accounts are regular users. Access is granted if the logged-in email matches the ADMIN_EMAIL set in Vercel.
+                </p>
             </motion.div>
         </div>
     );
@@ -194,12 +199,14 @@ const ViewResultsView = () => {
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState('');
 
-    const fetchAllElectionData = async () => {
+    const fetchAllElectionData = useCallback(async () => {
         setLoading(true); setError('');
         try {
-            // We can call our own public API route
-            const response = await fetch('/api/getElections');
-            if (!response.ok) throw new Error('Failed to fetch elections.');
+            const response = await fetch('/api/getElections'); // Call our own API
+            if (!response.ok) {
+                const data = await response.json();
+                throw new Error(data.error || 'Failed to fetch elections.');
+            }
             const data = await response.json();
             setAllElections(data.allElections || []);
         } catch (err) {
@@ -207,11 +214,11 @@ const ViewResultsView = () => {
             setError(err.message || 'Could not load election data.');
         }
         setLoading(false);
-    };
+    }, []);
 
     useEffect(() => {
-        fetchAllElectionData();
-    }, []);
+        fetchAllElectionData(); // Fetch on component mount
+    }, [fetchAllElectionData]);
 
     if (loading) {
         return <div className="p-8 flex justify-center items-center"><LoadingSpinner /> <span className="ml-2">Loading All Elections...</span></div>;
@@ -225,7 +232,14 @@ const ViewResultsView = () => {
 
     return (
         <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-8">
-            <h2 className="text-3xl font-bold mb-6 text-white">Election History & Results</h2>
+            <div className="flex justify-between items-center">
+                <h2 className="text-3xl font-bold text-white">Election History & Results</h2>
+                <button onClick={fetchAllElectionData} disabled={loading} className="flex items-center gap-2 px-4 py-2 text-sm font-semibold text-white bg-indigo-600 rounded-lg hover:bg-indigo-700 transition-colors disabled:opacity-50">
+                    <RefreshCw size={16} className={loading ? 'animate-spin' : ''} />
+                    <span>Refresh</span>
+                </button>
+            </div>
+
             {allElections.map(election => (
                 <div key={election.id} className="bg-gray-800 p-6 rounded-lg border border-gray-700/50 shadow-lg">
                     <div className="flex justify-between items-center mb-4">
@@ -234,21 +248,31 @@ const ViewResultsView = () => {
                             Status: {election.status}
                         </div>
                     </div>
+                    
+                    <p className="text-xs text-gray-400 mb-1">Started: {new Date(election.startTime * 1000).toLocaleString()}</p>
+                    <p className="text-xs text-gray-400 mb-6">Ends: {new Date(election.endTime * 1000).toLocaleString()}</p>
+
                     <div className="mb-6 space-y-4">
-                        {election.candidates.map(candidate => {
+                        {(election.candidates || []).map(candidate => {
                             const percentage = election.totalVotes > 0 ? (candidate.votes / election.totalVotes) * 100 : 0;
                             return (
                                 <div key={candidate.id}>
                                     <div className="flex justify-between items-center mb-1">
-                                        <span className="font-semibold text-white">{candidate.name}</span>
+                                        <span className="font-semibold text-white">{candidate.name} (ID: {candidate.id})</span>
                                         <span className="text-gray-300">{candidate.votes} Votes</span>
                                     </div>
                                     <div className="w-full bg-gray-700 rounded-full h-4">
-                                        <motion.div className="bg-gradient-to-r from-purple-500 to-indigo-600 h-4 rounded-full" initial={{ width: 0 }} animate={{ width: `${percentage}%` }} transition={{ duration: 1, ease: 'easeOut' }} />
+                                        <motion.div 
+                                          className="bg-gradient-to-r from-purple-500 to-indigo-600 h-4 rounded-full" 
+                                          initial={{ width: 0 }} 
+                                          animate={{ width: `${percentage}%` }} 
+                                          transition={{ duration: 1, ease: 'easeOut' }} 
+                                        />
                                     </div>
                                 </div>
                             );
                         })}
+                         {(!election.candidates || election.candidates.length === 0) && <p className="text-gray-400">No candidates found for this election.</p>}
                     </div>
                     <div className="border-t border-gray-700 pt-4 flex justify-between">
                         <span className="text-lg font-bold text-white">Total Votes</span>
@@ -286,6 +310,8 @@ const AdminDashboard = ({ adminEmail }) => {
                     </li>
                 </ul>
                 <div className="mt-auto">
+                    <p className="text-xs text-gray-500 mb-2">Logged in as:</p>
+                    <p className="text-sm text-indigo-300 break-words mb-4">{adminEmail}</p>
                     <button onClick={handleLogout} className="flex items-center w-full px-4 py-3 rounded-lg text-gray-400 hover:bg-gray-800 hover:text-red-400 transition-colors">
                         <LogOut className="w-5 h-5 mr-3" />
                         <span>Logout</span>
@@ -319,14 +345,23 @@ export default function AdminPage() {
     const [isAdmin, setIsAdmin] = useState(false);
 
     useEffect(() => {
+        // This function checks if the logged-in user is the admin
+        const checkAdmin = (user) => {
+            const adminEmail = process.env.NEXT_PUBLIC_ADMIN_EMAIL;
+            if (!adminEmail) {
+                console.error("CRITICAL: NEXT_PUBLIC_ADMIN_EMAIL is not set in environment variables.");
+                return false;
+            }
+            // You can use ANY email you want, as long as it's in the .env file
+            return user?.email === adminEmail;
+        };
+        
         // 1. Get initial session
         supabase.auth.getSession().then(({ data: { session: initialSession } }) => {
             console.log("Admin Page: Initial session check", initialSession?.user?.email);
             setSession(initialSession);
+            setIsAdmin(checkAdmin(initialSession?.user));
             setLoading(false);
-            if (initialSession?.user?.email === process.env.NEXT_PUBLIC_ADMIN_EMAIL) {
-                setIsAdmin(true);
-            }
         });
 
         // 2. Listen for auth changes
@@ -334,12 +369,8 @@ export default function AdminPage() {
           (_event, currentSession) => {
             console.log("Admin Page: Auth state changed", _event, currentSession?.user?.email);
             setSession(currentSession);
+            setIsAdmin(checkAdmin(currentSession?.user));
             setLoading(false);
-            if (currentSession?.user?.email === process.env.NEXT_PUBLIC_ADMIN_EMAIL) {
-                setIsAdmin(true);
-            } else {
-                setIsAdmin(false);
-            }
           }
         );
 
