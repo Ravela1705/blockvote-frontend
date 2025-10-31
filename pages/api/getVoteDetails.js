@@ -15,34 +15,32 @@ export default async function handler(req, res) {
     // --- Verify Supabase JWT Token ---
     const token = req.headers.authorization?.split('Bearer ')[1];
     if (!token) return res.status(401).json({ error: 'Authentication required.' });
-
     const { data: { user }, error: userError } = await supabaseAdmin.auth.getUser(token);
-    if (userError || !user) {
-        console.error("Supabase token verification error:", userError);
-        return res.status(401).json({ error: `Authentication failed: ${userError?.message || 'Invalid token'}` });
-    }
+    if (userError || !user) { console.error("Token verification error:", userError); return res.status(401).json({ error: `Authentication failed: ${userError?.message || 'Invalid token'}` }); }
     const userId = user.id;
     console.log("Verified Supabase user for getVoteDetails:", userId);
     // --- End Verification ---
 
 
-    // 3. Get the user's voter registration document from Supabase DB
+    // 3. Get the user's voter registration document
+    // --- UPDATED: Select the new 'votes_cast' column ---
     const { data: voterData, error: dbError } = await supabaseAdmin
         .from('voters')
-        .select('has_voted_election_1, vote_hash_election_1') // Select needed columns
-        .eq('id', userId) // Find the row where 'id' matches user's ID
-        .single(); // Expect only one row
+        .select('votes_cast') // <-- Select the new JSONB column
+        .eq('id', userId)
+        .single();
 
-    if (dbError && dbError.code !== 'PGRST116') { // Ignore 'PGRST116' (Row not found)
+    if (dbError && dbError.code !== 'PGRST116') { // Ignore 'Row not found'
         console.error("Supabase DB select error:", dbError);
         throw new Error(`Supabase DB error: ${dbError.message}`);
     }
 
     // 4. Send back their vote details
+    // --- UPDATED: Return the whole votes_cast object (or an empty one) ---
     res.status(200).json({
-      hasVoted: voterData?.has_voted_election_1 || false,
-      hash: voterData?.vote_hash_election_1 || null
+      votes_cast: voterData?.votes_cast || {}
     });
+    // --- END UPDATED ---
 
   } catch (error) {
     console.error('Error in getVoteDetails:', error);

@@ -25,10 +25,6 @@ export default async function handler(req, res) {
         return res.status(400).json({ error: 'User ID and email are required.' });
     }
 
-    // Optional: Add backend token verification if needed for extra security,
-    // but for just creating a DB record after client signup, this might be sufficient
-    // if Row Level Security is configured properly later.
-
     try {
         console.log("API: Adding user to Supabase 'voters' table:", userId, email);
 
@@ -39,7 +35,7 @@ export default async function handler(req, res) {
                 {
                     id: userId, // Use the user ID from Supabase Auth as the primary key
                     email: email,
-                    // has_voted_election_1 defaults to false in the table schema
+                    votes_cast: {} // --- UPDATED: Initialize the new JSONB column as an empty object ---
                 }
             ])
             .select(); // Optionally select to confirm insertion
