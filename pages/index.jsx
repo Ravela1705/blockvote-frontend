@@ -8,18 +8,12 @@ import {
 import { createClient } from '@supabase/supabase-js'
 // Import ethers
 import { ethers } from 'ethers'; // For blockchain interaction
-// Import Buffer for robust Base64 decoding
+// Import Buffer for robust Base64 decoding *on the server*
 import { Buffer } from 'buffer';
 
 // --- 1. SUPABASE CLIENT INITIALIZATION ---
-// Create a single supabase client for interacting with your database
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
 const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
-
-if (!supabaseUrl || !supabaseAnonKey) {
-  console.error("CRITICAL ERROR: Supabase URL or Anon Key is missing. Check .env.local and Vercel environment variables.")
-}
-// We export this to be used by other potential files if needed
 export const supabase = createClient(supabaseUrl, supabaseAnonKey)
 
 // --- 2. GEMINI API CONFIGURATION ---
@@ -28,10 +22,7 @@ const GEMINI_API_URL = `https://generativelanguage.googleapis.com/v1beta/models/
 
 // Gemini API Helper Function
 const callGemini = async (prompt, retries = 3, delay = 1000) => {
-    if (!GEMINI_API_KEY || GEMINI_API_KEY === "YOUR_GEMINI_KEY" || !GEMINI_API_KEY.trim()) { // Check placeholder or empty
-         console.warn("Gemini API key not set in environment variables (NEXT_PUBLIC_GEMINI_API_KEY).");
-         return "Gemini API key not set.";
-    }
+    if (!GEMINI_API_KEY || GEMINI_API_KEY === "YOUR_GEMINI_KEY" || !GEMINI_API_KEY.trim()) { console.warn("Gemini API key not set."); return "Gemini API key not set."; }
      try { const payload = { contents: [{ parts: [{ text: prompt }] }] }; const response = await fetch(GEMINI_API_URL, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }); if (!response.ok) { if ((response.status === 429 || response.status >= 500) && retries > 0) { await new Promise(resolve => setTimeout(resolve, delay)); return callGemini(prompt, retries - 1, delay * 2); } throw new Error(`API Error: ${response.statusText}`); } const result = await response.json(); const candidate = result.candidates?.[0]; if (candidate?.content?.parts?.[0]?.text) return candidate.content.parts[0].text; console.warn("Unexpected Gemini response:", result); return "Could not generate response."; } catch (error) { console.error("Error calling Gemini:", error); if (retries > 0) { await new Promise(resolve => setTimeout(resolve, delay)); return callGemini(prompt, retries - 1, delay * 2); } return `Error: ${error.message}.`; }
 };
 
@@ -45,8 +36,17 @@ const getContract = () => {
         const abiBase64 = process.env.NEXT_PUBLIC_CONTRACT_ABI;
         if (!abiBase64) throw new Error("Contract ABI env var missing (NEXT_PUBLIC_CONTRACT_ABI)");
         
-        // Use Buffer for robust decoding (works in browser + server)
-        const abiString = Buffer.from(abiBase64, 'base64').toString('utf-8');
+        // --- *** THIS IS THE FIX *** ---
+        // We must check if we are in the browser or on the server
+        let abiString;
+        if (typeof window === 'undefined') {
+          // We are on the server (Node.js), use Buffer
+          abiString = Buffer.from(abiBase64, 'base64').toString('utf-8');
+        } else {
+          // We are in the browser, use atob()
+          abiString = atob(abiBase64); 
+        }
+        // --- *** END FIX *** ---
           
         const contractABI = JSON.parse(abiString);
         
@@ -59,6 +59,7 @@ const getContract = () => {
         return contract;
     } catch (e) {
         console.error("CRITICAL ERROR getting contract instance:", e.message);
+        // This error will now appear in the *browser* console
         return null; // Return null if setup fails
     }
 };
@@ -89,11 +90,10 @@ const LoginView = () => {
             console.log("Supabase signup response:", authResponse);
             if (authResponse.error) throw authResponse.error;
             
-            // Handle cases where user is returned but session is null (e.g., email confirmation)
             const user = authResponse.data?.user;
             if (!user) {
                  if(authResponse.error?.message.includes("confirmation")) {
-                    setSuccessMessage("Registration submitted! Please check your email to confirm your account.");
+                    setSuccessMessage("Registration submitted! Please check email.");
                     setLoading(false);
                     return;
                  }
@@ -109,25 +109,19 @@ const LoginView = () => {
             const backendData = await backendResponse.json();
             if (!backendResponse.ok) {
                 console.error("Backend DB creation failed:", backendData.error);
-                // Try to clean up the auth user if DB record fails
-                // Note: This is advanced and might be skipped, but good practice
-                // await supabase.auth.deleteUser(user.id) // This requires admin privileges
                 await supabase.auth.signOut();
                 throw new Error(backendData.error || 'Failed registration.');
             }
             console.log("Backend DB creation successful.");
 
-            // If email confirmation is NOT required, Supabase often signs the user in
-            // If it IS required, we show this message.
             if(authResponse.data.session) {
                 setSuccessMessage("Registration successful! Logging in...");
             } else {
                  setSuccessMessage("Registration successful! Please check your email to confirm your account.");
-                 setLoading(false); // Stop loading, as user needs to act
+                 setLoading(false);
             }
             
         } else {
-            // Handle Login
             console.log("Attempting Supabase sign in for:", email);
             authResponse = await supabase.auth.signInWithPassword({ email, password });
             console.log("Supabase signin response:", authResponse);
