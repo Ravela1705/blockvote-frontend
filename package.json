@@ -10,19 +10,20 @@
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.44.4",
-    "@tailwindcss/postcss": "^4.1.16",
+    "buffer": "^6.0.3",
     "ethers": "^5.7.2",
     "framer-motion": "^11.3.8",
     "lucide-react": "^0.414.0",
-    "next": "^14.2.33",
+    "next": "14.2.5",
     "react": "^18",
     "react-dom": "^18"
   },
   "devDependencies": {
-    "autoprefixer": "^10.4.21",
+    "@tailwindcss/postcss": "^2.0.4",
+    "autoprefixer": "^10.4.19",
     "eslint": "^8",
     "eslint-config-next": "14.2.5",
-    "postcss": "^8.5.6",
-    "tailwindcss": "^3.4.18"
+    "postcss": "^8.4.39",
+    "tailwindcss": "^3.4.6"
   }
 }

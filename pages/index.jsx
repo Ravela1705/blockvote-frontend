@@ -8,11 +8,18 @@ import {
 import { createClient } from '@supabase/supabase-js'
 // Import ethers
 import { ethers } from 'ethers'; // For blockchain interaction
+// Import Buffer for robust Base64 decoding
+import { Buffer } from 'buffer';
 
 // --- 1. SUPABASE CLIENT INITIALIZATION ---
 // Create a single supabase client for interacting with your database
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
 const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
+
+if (!supabaseUrl || !supabaseAnonKey) {
+  console.error("CRITICAL ERROR: Supabase URL or Anon Key is missing. Check .env.local and Vercel environment variables.")
+}
+// We export this to be used by other potential files if needed
 export const supabase = createClient(supabaseUrl, supabaseAnonKey)
 
 // --- 2. GEMINI API CONFIGURATION ---
@@ -21,7 +28,10 @@ const GEMINI_API_URL = `https://generativelanguage.googleapis.com/v1beta/models/
 
 // Gemini API Helper Function
 const callGemini = async (prompt, retries = 3, delay = 1000) => {
-    if (!GEMINI_API_KEY || GEMINI_API_KEY === "YOUR_GEMINI_KEY") { console.warn("Gemini API key not set."); return "Gemini API key not set."; }
+    if (!GEMINI_API_KEY || GEMINI_API_KEY === "YOUR_GEMINI_KEY" || !GEMINI_API_KEY.trim()) { // Check placeholder or empty
+         console.warn("Gemini API key not set in environment variables (NEXT_PUBLIC_GEMINI_API_KEY).");
+         return "Gemini API key not set.";
+    }
      try { const payload = { contents: [{ parts: [{ text: prompt }] }] }; const response = await fetch(GEMINI_API_URL, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }); if (!response.ok) { if ((response.status === 429 || response.status >= 500) && retries > 0) { await new Promise(resolve => setTimeout(resolve, delay)); return callGemini(prompt, retries - 1, delay * 2); } throw new Error(`API Error: ${response.statusText}`); } const result = await response.json(); const candidate = result.candidates?.[0]; if (candidate?.content?.parts?.[0]?.text) return candidate.content.parts[0].text; console.warn("Unexpected Gemini response:", result); return "Could not generate response."; } catch (error) { console.error("Error calling Gemini:", error); if (retries > 0) { await new Promise(resolve => setTimeout(resolve, delay)); return callGemini(prompt, retries - 1, delay * 2); } return `Error: ${error.message}.`; }
 };
 
@@ -35,10 +45,8 @@ const getContract = () => {
         const abiBase64 = process.env.NEXT_PUBLIC_CONTRACT_ABI;
         if (!abiBase64) throw new Error("Contract ABI env var missing (NEXT_PUBLIC_CONTRACT_ABI)");
         
-        // Check if we're in Node.js (server-side) or browser (client-side)
-        const abiString = (typeof window === 'undefined')
-          ? Buffer.from(abiBase64, 'base64').toString('utf-8') // Node.js
-          : atob(abiBase64); // Browser
+        // Use Buffer for robust decoding (works in browser + server)
+        const abiString = Buffer.from(abiBase64, 'base64').toString('utf-8');
           
         const contractABI = JSON.parse(abiString);
         
@@ -80,16 +88,18 @@ const LoginView = () => {
             authResponse = await supabase.auth.signUp({ email, password });
             console.log("Supabase signup response:", authResponse);
             if (authResponse.error) throw authResponse.error;
-            if (!authResponse.data?.user && !authResponse.data?.session) {
+            
+            // Handle cases where user is returned but session is null (e.g., email confirmation)
+            const user = authResponse.data?.user;
+            if (!user) {
                  if(authResponse.error?.message.includes("confirmation")) {
-                    setSuccessMessage("Registration submitted! Please check email.");
+                    setSuccessMessage("Registration submitted! Please check your email to confirm your account.");
                     setLoading(false);
                     return;
                  }
-                 throw new Error("Signup failed silently.");
+                 throw new Error("Signup failed silently or user data was not returned.");
             }
-            const user = authResponse.data?.session?.user || authResponse.data?.user;
-            if (!user) throw new Error("User registration failed.");
+
             console.log("Calling backend DB record for:", user.id);
             const backendResponse = await fetch('/api/registerUser', {
                 method: 'POST',
@@ -99,12 +109,25 @@ const LoginView = () => {
             const backendData = await backendResponse.json();
             if (!backendResponse.ok) {
                 console.error("Backend DB creation failed:", backendData.error);
+                // Try to clean up the auth user if DB record fails
+                // Note: This is advanced and might be skipped, but good practice
+                // await supabase.auth.deleteUser(user.id) // This requires admin privileges
                 await supabase.auth.signOut();
                 throw new Error(backendData.error || 'Failed registration.');
             }
             console.log("Backend DB creation successful.");
-            setSuccessMessage("Registration successful! Logging in...");
+
+            // If email confirmation is NOT required, Supabase often signs the user in
+            // If it IS required, we show this message.
+            if(authResponse.data.session) {
+                setSuccessMessage("Registration successful! Logging in...");
+            } else {
+                 setSuccessMessage("Registration successful! Please check your email to confirm your account.");
+                 setLoading(false); // Stop loading, as user needs to act
+            }
+            
         } else {
+            // Handle Login
             console.log("Attempting Supabase sign in for:", email);
             authResponse = await supabase.auth.signInWithPassword({ email, password });
             console.log("Supabase signin response:", authResponse);
@@ -121,48 +144,42 @@ const LoginView = () => {
     }
   };
 
-  return ( <div className="flex items-center justify-center min-h-screen w-full bg-gray-950"> <motion.div initial={{ opacity: 0, y: -20 }} animate={{ opacity: 1, y: 0 }} className="w-full max-w-md p-8 m-4 bg-gray-900 border border-gray-700/50 rounded-lg shadow-2xl"> <h1 className="text-3xl font-bold text-white mb-4 text-center flex items-center justify-center"><FileText className="text-indigo-400 mr-2" />BlockVote</h1> <p className="text-gray-400 text-center mb-6">{isRegistering ? 'Create voter account' : 'Student Voter Login'}</p> <form onSubmit={handleAuth}> <div className="mb-4"><label className="block text-sm font-medium text-gray-300 mb-2" htmlFor="email">Student ID (Email)</label><input type="email" id="email" value={email} onChange={(e) => setEmail(e.target.value)} className="w-full px-4 py-3 bg-gray-800 text-white border border-gray-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500" placeholder="e.g., 12345@college.edu" required /></div> <div className="mb-6"><label className="block text-sm font-medium text-gray-300 mb-2" htmlFor="password">Password</label><input type="password" id="password" value={password} onChange={(e) => setPassword(e.target.value)} className="w-full px-4 py-3 bg-gray-800 text-white border border-gray-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500" placeholder="••••••••" required /></div> {error && ( <div className="p-3 mb-4 text-sm text-red-200 bg-red-900/50 border border-red-700 rounded-lg flex items-center"><AlertTriangle className="w-4 h-4 mr-2" /> {error}</div> )} {successMessage && ( <div className="p-3 mb-4 text-sm text-green-200 bg-green-900/50 border border-green-700 rounded-lg flex items-center"><CheckCircle className="w-4 h-4 mr-2" /> {successMessage}</div> )} <button type="submit" disabled={loading} className="w-full flex items-center justify-center gap-2 px-5 py-3 text-white font-semibold bg-linear-to-r from-indigo-600 to-purple-600 rounded-lg hover:from-indigo-700 hover:to-purple-700 transition-colors disabled:opacity-50"> {loading ? <LoadingSpinner /> : (isRegistering ? <UserPlus size={20} /> : <LogIn size={20} />)} <span>{loading ? 'Working...' : (isRegistering ? 'Register' : 'Login')}</span> </button> </form> <p className="text-center text-sm text-gray-400 mt-6">{isRegistering ? 'Already have account?' : "Don't have account?"}<button onClick={() => { setIsRegistering(!isRegistering); setError(''); setSuccessMessage(''); }} className="font-medium text-indigo-400 hover:text-indigo-300 ml-1">{isRegistering ? 'Login' : 'Register (Demo)'}</button></p> </motion.div> </div> );
+  return ( <div className="flex items-center justify-center min-h-screen w-full bg-gray-950"> <motion.div initial={{ opacity: 0, y: -20 }} animate={{ opacity: 1, y: 0 }} className="w-full max-w-md p-8 m-4 bg-gray-900 border border-gray-700/50 rounded-lg shadow-2xl"> <h1 className="text-3xl font-bold text-white mb-4 text-center flex items-center justify-center"><FileText className="text-indigo-400 mr-2" />BlockVote</h1> <p className="text-gray-400 text-center mb-6">{isRegistering ? 'Create voter account' : 'Student Voter Login'}</p> <form onSubmit={handleAuth}> <div className="mb-4"><label className="block text-sm font-medium text-gray-300 mb-2" htmlFor="email">Student ID (Email)</label><input type="email" id="email" value={email} onChange={(e) => setEmail(e.target.value)} className="w-full px-4 py-3 bg-gray-800 text-white border border-gray-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500" placeholder="e.g., 12345@college.edu" required /></div> <div className="mb-6"><label className="block text-sm font-medium text-gray-300 mb-2" htmlFor="password">Password</label><input type="password" id="password" value={password} onChange={(e) => setPassword(e.target.value)} className="w-full px-4 py-3 bg-gray-800 text-white border border-gray-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500" placeholder="••••••••" required /></div> {error && ( <div className="p-3 mb-4 text-sm text-red-200 bg-red-900/50 border border-red-700 rounded-lg flex items-center"><AlertTriangle className="w-4 h-4 mr-2" /> {error}</div> )} {successMessage && ( <div className="p-3 mb-4 text-sm text-green-200 bg-green-900/50 border border-green-700 rounded-lg flex items-center"><CheckCircle className="w-4 h-4 mr-2" /> {successMessage}</div> )} <button type="submit" disabled={loading} className="w-full flex items-center justify-center gap-2 px-5 py-3 text-white font-semibold bg-gradient-to-r from-indigo-600 to-purple-600 rounded-lg hover:from-indigo-700 hover:to-purple-700 transition-colors disabled:opacity-50"> {loading ? <LoadingSpinner /> : (isRegistering ? <UserPlus size={20} /> : <LogIn size={20} />)} <span>{loading ? 'Working...' : (isRegistering ? 'Register' : 'Login')}</span> </button> </form> <p className="text-center text-sm text-gray-400 mt-6">{isRegistering ? 'Already have account?' : "Don't have account?"}<button onClick={() => { setIsRegistering(!isRegistering); setError(''); setSuccessMessage(''); }} className="font-medium text-indigo-400 hover:text-indigo-300 ml-1">{isRegistering ? 'Login' : 'Register (Demo)'}</button></p> </motion.div> </div> );
 };
 
 // --- Other Components (Sidebar, Header...) ---
-const Sidebar = ({ view, setView, isMobileMenuOpen, setIsMobileMenuOpen }) => { /* ... same as before ... */ const navItems = [ { name: 'home', icon: HomeIcon, view: 'home' }, { name: 'elections', icon: Vote, view: 'elections' }, { name: 'results', icon: BarChart3, view: 'results' }, { name: 'verification', icon: ShieldCheck, view: 'verification' }, ]; const NavLink = ({ item }) => ( <button onClick={() => { setView(item.view); if (isMobileMenuOpen) setIsMobileMenuOpen(false); }} className={`flex items-center w-full px-4 py-3 text-left ${view === item.view ? 'bg-indigo-600 text-white' : 'text-gray-300 hover:bg-gray-700 hover:text-white'} transition-colors duration-200 rounded-lg`} > <item.icon size={20} className="mr-3" /> <span className="font-medium">{item.name}</span> </button> ); return ( <> {/* Mobile Menu */} <AnimatePresence>{isMobileMenuOpen && ( <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 z-30 bg-black/50 backdrop-blur-sm lg:hidden" onClick={() => setIsMobileMenuOpen(false)} /> )}</AnimatePresence> <motion.div initial={{ x: '-100%' }} animate={{ x: isMobileMenuOpen ? '0%' : '-100%' }} transition={{ type: 'spring', stiffness: 300, damping: 30 }} className="fixed top-0 left-0 h-full w-64 bg-gray-900 border-r border-gray-700/50 p-4 z-40 lg:hidden"> <h1 className="text-2xl font-bold text-white mb-6 flex items-center"><FileText className="text-indigo-400 mr-2" />BlockVote</h1> <nav className="flex flex-col gap-2">{navItems.map(item => <NavLink key={item.name} item={item} />)}</nav> </motion.div> {/* Desktop Sidebar */} <div className="hidden lg:flex lg:flex-col lg:w-64 h-full min-h-screen bg-gray-900 border-r border-gray-700/50 p-5"> <h1 className="text-3xl font-bold text-white mb-8 flex items-center"><FileText className="text-indigo-400 mr-2" />BlockVote</h1> <nav className="flex flex-col gap-2">{navItems.map(item => <NavLink key={item.name} item={item} />)}</nav> <div className="mt-auto text-gray-500 text-xs"><p>© 2025 BlockVote. All rights reserved.</p></div> </div> </> ); };
-const Header = ({ view, setIsMobileMenuOpen, userEmail }) => { /* ... same as before ... */ const viewTitles = { home: 'Dashboard', elections: 'Active Elections', results: 'Live Results', verification: 'Verify Vote' }; const handleLogout = async () => { const { error } = await supabase.auth.signOut(); if (error) console.error("Error signing out:", error); }; return ( <header className="flex items-center justify-between w-full h-20 px-4 md:px-8 border-b border-gray-700/50"> <div className="flex items-center gap-2"> <button className="lg:hidden p-2 -ml-2 text-gray-300 hover:text-white" onClick={() => setIsMobileMenuOpen(true)}> <Menu size={24} /> </button> <h2 className="text-xl md:text-2xl font-semibold text-white">{viewTitles[view]}</h2> </div> <div className="flex items-center gap-4"> <span className="hidden sm:block text-sm text-gray-400">{userEmail}</span> <button onClick={handleLogout} className="flex items-center gap-2 px-4 py-2 text-sm font-semibold text-white bg-gray-700 rounded-lg shadow-md hover:bg-gray-600 transition-all duration-300 ease-in-out" > <LogOut size={18} /> <span>Logout</span> </button> </div> </header> ); };
+const Sidebar = ({ view, setView, isMobileMenuOpen, setIsMobileMenuOpen }) => {
+    const navItems = [ { name: 'home', icon: HomeIcon, view: 'home' }, { name: 'elections', icon: Vote, view: 'elections' }, { name: 'results', icon: BarChart3, view: 'results' }, { name: 'verification', icon: ShieldCheck, view: 'verification' }, ];
+    const NavLink = ({ item }) => ( <button onClick={() => { setView(item.view); if (isMobileMenuOpen) setIsMobileMenuOpen(false); }} className={`flex items-center w-full px-4 py-3 text-left ${view === item.view ? 'bg-indigo-600 text-white' : 'text-gray-300 hover:bg-gray-700 hover:text-white'} transition-colors duration-200 rounded-lg`} > <item.icon size={20} className="mr-3" /> <span className="font-medium">{item.name}</span> </button> );
+    return ( <> {/* Mobile Menu */} <AnimatePresence>{isMobileMenuOpen && ( <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 z-30 bg-black/50 backdrop-blur-sm lg:hidden" onClick={() => setIsMobileMenuOpen(false)} /> )}</AnimatePresence> <motion.div initial={{ x: '-100%' }} animate={{ x: isMobileMenuOpen ? '0%' : '-100%' }} transition={{ type: 'spring', stiffness: 300, damping: 30 }} className="fixed top-0 left-0 h-full w-64 bg-gray-900 border-r border-gray-700/50 p-4 z-40 lg:hidden"> <h1 className="text-2xl font-bold text-white mb-6 flex items-center"><FileText className="text-indigo-400 mr-2" />BlockVote</h1> <nav className="flex flex-col gap-2">{navItems.map(item => <NavLink key={item.name} item={item} />)}</nav> </motion.div> {/* Desktop Sidebar */} <div className="hidden lg:flex lg:flex-col lg:w-64 h-full min-h-screen bg-gray-900 border-r border-gray-700/50 p-5"> <h1 className="text-3xl font-bold text-white mb-8 flex items-center"><FileText className="text-indigo-400 mr-2" />BlockVote</h1> <nav className="flex flex-col gap-2">{navItems.map(item => <NavLink key={item.name} item={item} />)}</nav> <div className="mt-auto text-gray-500 text-xs"><p>© 2025 BlockVote. All rights reserved.</p></div> </div> </> );
+};
+const Header = ({ view, setIsMobileMenuOpen, userEmail }) => {
+    const viewTitles = { home: 'Dashboard', elections: 'Active Elections', results: 'Live Results', verification: 'Verify Vote' };
+    const handleLogout = async () => { console.log("Logout button clicked"); const { error } = await supabase.auth.signOut(); if (error) console.error("Error signing out:", error); };
+    return ( <header className="flex items-center justify-between w-full h-20 px-4 md:px-8 border-b border-gray-700/50"> <div className="flex items-center gap-2"> <button className="lg:hidden p-2 -ml-2 text-gray-300 hover:text-white" onClick={() => setIsMobileMenuOpen(true)}> <Menu size={24} /> </button> <h2 className="text-xl md:text-2xl font-semibold text-white">{viewTitles[view]}</h2> </div> <div className="flex items-center gap-4"> <span className="hidden sm:block text-sm text-gray-400">{userEmail}</span> <button onClick={handleLogout} className="flex items-center gap-2 px-4 py-2 text-sm font-semibold text-white bg-gray-700 rounded-lg shadow-md hover:bg-gray-600 transition-all duration-300 ease-in-out" > <LogOut size={18} /> <span>Logout</span> </button> </div> </header> );
+};
 
-
-// --- *** UPDATED ELECTION VIEW (Multi-Election) *** ---
+// --- ElectionView (Multi-Election) ---
 const ElectionView = ({ allElections, voterData, onVoteCasted }) => {
-    const [selectedCandidate, setSelectedCandidate] = useState({}); // Stores { electionId: candidateId }
+    const [selectedCandidate, setSelectedCandidate] = useState({});
     const [voteLoading, setVoteLoading] = useState(false);
     const [message, setMessage] = useState({ type: '', text: '', electionId: null });
 
     const handleVote = async (electionId, candidateId) => {
-        setVoteLoading(true);
-        setMessage({ type: '', text: '', electionId: electionId });
-        
+        setVoteLoading(true); setMessage({ type: '', text: '', electionId: electionId });
         const { data: { session }, error: sessionError } = await supabase.auth.getSession();
         if (sessionError || !session) { setMessage({ type: 'error', text: "Auth error.", electionId: electionId }); setVoteLoading(false); return; }
         const token = session.access_token;
-
         try {
-            const response = await fetch('/api/castVote', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-                body: JSON.stringify({ electionId, candidateId }),
-            });
-            const data = await response.json();
-            if (!response.ok) throw new Error(data.error || 'Vote failed.');
+            const response = await fetch('/api/castVote', { method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` }, body: JSON.stringify({ electionId, candidateId }), });
+            const data = await response.json(); if (!response.ok) throw new Error(data.error || 'Vote failed.');
             setMessage({ type: 'success', text: `Success! Vote recorded. TX Hash: ${data.transactionHash.substring(0, 10)}...`, electionId: electionId });
-            
             if (onVoteCasted) onVoteCasted(); 
-
-        } catch (err) {
-            let errorMessage = err.message || 'Unknown error.';
-            setMessage({ type: 'error', text: errorMessage, electionId: electionId });
-        }
+        } catch (err) { let errorMessage = err.message || 'Unknown error.'; setMessage({ type: 'error', text: errorMessage, electionId: electionId }); }
         setVoteLoading(false);
     };
 
-    if (allElections.length === 0) {
+    if (!allElections || allElections.length === 0) {
         return <div className="p-8 text-center text-gray-400">No elections are available at this time.</div>;
     }
 
@@ -174,63 +191,26 @@ const ElectionView = ({ allElections, voterData, onVoteCasted }) => {
                 const currentSelection = selectedCandidate[election.id];
 
                 return (
-                    <motion.div
-                        key={election.id}
-                        className="bg-gray-800 p-6 rounded-lg border border-gray-700/50 shadow-lg"
-                        initial={{ opacity: 0, y: 20 }}
-                        animate={{ opacity: 1, y: 0 }}
-                    >
-                        {/* Header for this election */}
+                    <motion.div key={election.id} className="bg-gray-800 p-6 rounded-lg border border-gray-700/50 shadow-lg" initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} >
                         <div className="flex justify-between items-center mb-4">
                             <h2 className="text-2xl font-semibold text-white">{election.title} (ID: {election.id})</h2>
-                            <div className={`p-2 px-3 rounded-full text-sm font-medium ${ election.status === 'Active' ? 'bg-green-900/50 text-green-300' : election.status === 'Ended' ? 'bg-red-900/50 text-red-300' : 'bg-yellow-900/50 text-yellow-300' }`}>
-                                Status: {election.status}
-                            </div>
+                            <div className={`p-2 px-3 rounded-full text-sm font-medium ${ election.status === 'Active' ? 'bg-green-900/50 text-green-300' : election.status === 'Ended' ? 'bg-red-900/50 text-red-300' : 'bg-yellow-900/50 text-yellow-300' }`}> Status: {election.status} </div>
                         </div>
                         {election.status === 'Active' && <p className="text-xs text-gray-400 mb-4">Ends: {new Date(election.endTime * 1000).toLocaleString()}</p>}
                         {election.status === 'Upcoming' && <p className="text-xs text-gray-400 mb-4">Starts: {new Date(election.startTime * 1000).toLocaleString()}</p>}
                         {election.status === 'Ended' && <p className="text-xs text-gray-400 mb-4">Ended: {new Date(election.endTime * 1000).toLocaleString()}</p>}
 
-                        {/* Message for this specific election */}
-                        {message.electionId === election.id && message.text && (
-                            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className={`p-4 mb-4 rounded-lg ${message.type === 'success' ? 'bg-green-800 border-green-600' : 'bg-red-800 border-red-600'} border text-white`} >
-                                {message.type === 'success' ? <CheckCircle className="inline mr-2" /> : <AlertTriangle className="inline mr-2" />}
-                                {message.text}
-                            </motion.div>
-                        )}
-
-                        {/* Candidates for this election */}
+                        {message.electionId === election.id && message.text && ( <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className={`p-4 mb-4 rounded-lg ${message.type === 'success' ? 'bg-green-800 border-green-600' : 'bg-red-800 border-red-600'} border text-white`} > {message.type === 'success' ? <CheckCircle className="inline mr-2" /> : <AlertTriangle className="inline mr-2" />} {message.text} </motion.div> )}
                         <div className="flex flex-col gap-3">
-                            {election.candidates.map(candidate => (
-                                <button
-                                    key={candidate.id}
-                                    onClick={() => setSelectedCandidate({ ...selectedCandidate, [election.id]: candidate.id })}
-                                    disabled={election.status !== 'Active'}
-                                    className={`w-full text-left p-4 rounded-lg transition-all ${
-                                        currentSelection === candidate.id && election.status === 'Active'
-                                            ? 'bg-indigo-600 text-white ring-2 ring-indigo-300'
-                                            : 'bg-gray-700 text-gray-200 hover:bg-gray-600'
-                                    } disabled:opacity-50 disabled:cursor-not-allowed`}
-                                >
+                            {(election.candidates || []).map(candidate => (
+                                <button key={candidate.id} onClick={() => setSelectedCandidate({ ...selectedCandidate, [election.id]: candidate.id })} disabled={election.status !== 'Active'} className={`w-full text-left p-4 rounded-lg transition-all ${ currentSelection === candidate.id && election.status === 'Active' ? 'bg-indigo-600 text-white ring-2 ring-indigo-300' : 'bg-gray-700 text-gray-200 hover:bg-gray-600' } disabled:opacity-50 disabled:cursor-not-allowed`} >
                                     {candidate.name}
                                 </button>
                             ))}
                         </div>
-                        
-                        {/* Vote button for this election */}
-                        <button
-                            onClick={() => { if(currentSelection) { handleVote(election.id, currentSelection) } }}
-                            disabled={!currentSelection || isVoteDisabled}
-                            className="w-full mt-5 px-5 py-3 text-white font-semibold bg-indigo-600 rounded-lg hover:bg-indigo-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
-                        >
+                        <button onClick={() => { if(currentSelection) { handleVote(election.id, currentSelection) } }} disabled={!currentSelection || isVoteDisabled} className="w-full mt-5 px-5 py-3 text-white font-semibold bg-indigo-600 rounded-lg hover:bg-indigo-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2" >
                             {voteLoading && message.electionId === election.id ? <LoadingSpinner /> : (hasVoted ? <CheckCircle /> : <Vote size={18} />)}
-                            <span>
-                                {hasVoted ? 'Voted Successfully' :
-                                 voteLoading && message.electionId === election.id ? 'Submitting...' :
-                                 election.status !== 'Active' ? `Election ${election.status}` :
-                                 !currentSelection ? 'Select a Candidate' :
-                                 'Cast Your Vote'}
-                            </span>
+                            <span> {hasVoted ? 'Voted Successfully' : voteLoading && message.electionId === election.id ? 'Submitting...' : election.status !== 'Active' ? `Election ${election.status}` : !currentSelection ? 'Select a Candidate' : 'Cast Your Vote'} </span>
                         </button>
                     </motion.div>
                 );
@@ -239,12 +219,11 @@ const ElectionView = ({ allElections, voterData, onVoteCasted }) => {
     );
 };
 
-// --- *** UPDATED DASHBOARD HOME *** ---
+// --- DashboardHome (Multi-Election) ---
 const DashboardHome = ({ allElections, voterData }) => {
     const totalElections = allElections.length;
     const totalCandidates = allElections.reduce((acc, election) => acc + (election.candidates ? election.candidates.length : 0), 0);
     const votesCastByUser = voterData ? Object.keys(voterData).length : 0;
-
     const cards = [
         { title: 'Total Elections', value: totalElections, icon: FileText, color: 'text-blue-400' },
         { title: 'Total Candidates', value: totalCandidates, icon: Users, color: 'text-green-400' },
@@ -252,7 +231,7 @@ const DashboardHome = ({ allElections, voterData }) => {
     ];
     return (
      <div className="p-4 md:p-8">
-      <motion.div className="mb-8 p-6 bg-linear-to-r from-gray-800 to-gray-800/50 border border-gray-700/50 rounded-lg shadow-lg" initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1 }}>
+      <motion.div className="mb-8 p-6 bg-gradient-to-r from-gray-800 to-gray-800/50 border border-gray-700/50 rounded-lg shadow-lg" initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1 }}>
         <h3 className="text-2xl font-bold text-white mb-2">Welcome to BlockVote</h3>
         <p className="text-gray-300">The secure, transparent, and decentralized voting platform.</p>
       </motion.div>
@@ -269,7 +248,7 @@ const DashboardHome = ({ allElections, voterData }) => {
 };
 
 
-// --- *** UPDATED RESULTS VIEW (Multi-Election) *** ---
+// --- ResultsView (Multi-Election) ---
 const ResultsView = ({ allElections, onRefresh }) => {
     const [selectedElectionId, setSelectedElectionId] = useState(null);
     const [analysis, setAnalysis] = useState('');
@@ -277,10 +256,9 @@ const ResultsView = ({ allElections, onRefresh }) => {
     
     const selectedElection = allElections.find(e => e.id === selectedElectionId);
 
-    // Set default selection when data loads
     useEffect(() => {
         if (!selectedElectionId && allElections.length > 0) {
-            setSelectedElectionId(allElections[allElections.length - 1].id); // Default to latest
+            setSelectedElectionId(allElections[0].id); // Default to latest (which is first in reversed list)
         }
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [allElections]); // Only depend on allElections
@@ -326,8 +304,8 @@ const ResultsView = ({ allElections, onRefresh }) => {
                 <div className="bg-gray-800 p-6 rounded-lg border border-gray-700/50 shadow-lg">
                     <h4 className="text-xl font-semibold text-white mb-4">{selectedElection.title}</h4>
                     <div className="mb-6 space-y-4">
-                        {selectedElection.candidates.length === 0 && <p className="text-gray-400 text-center">No candidates found for this election.</p>}
-                        {selectedElection.candidates.map(candidate => {
+                        {selectedElection.candidates.length === 0 && <p className="text-gray-400 text-center">No candidates found.</p>}
+                        {(selectedElection.candidates || []).map(candidate => {
                             const percentage = selectedElection.totalVotes > 0 ? (candidate.votes / selectedElection.totalVotes) * 100 : 0;
                             return (
                                 <div key={candidate.id}>
@@ -336,7 +314,7 @@ const ResultsView = ({ allElections, onRefresh }) => {
                                         <span className="text-gray-300">{candidate.votes} Votes</span>
                                     </div>
                                     <div className="w-full bg-gray-700 rounded-full h-4">
-                                        <motion.div className="bg-linear-to-r from-purple-500 to-indigo-600 h-4 rounded-full" initial={{ width: 0 }} animate={{ width: `${percentage}%` }} transition={{ duration: 1, ease: 'easeOut' }} />
+                                        <motion.div className="bg-gradient-to-r from-purple-500 to-indigo-600 h-4 rounded-full" initial={{ width: 0 }} animate={{ width: `${percentage}%` }} transition={{ duration: 1, ease: 'easeOut' }} />
                                     </div>
                                 </div>
                             );
@@ -348,14 +326,14 @@ const ResultsView = ({ allElections, onRefresh }) => {
                     </div>
                 </div>
             ) : (
-                <div className="text-center text-gray-400 p-6">{allElections.length > 0 ? 'Please select an election to view results.' : 'No results available.'}</div>
+                <div className="text-center text-gray-400 p-6">{allElections.length > 0 ? 'Select election to view results.' : 'No results available.'}</div>
             )}
 
             <div className="mt-8">
                 <button
                     onClick={getAiAnalysis}
-                    disabled={loadingAnalysis || !selectedElection || selectedElection.totalVotes === 0}
-                    className="flex items-center justify-center gap-2 px-5 py-3 text-white font-semibold bg-linear-to-r from-teal-500 to-cyan-600 rounded-lg hover:from-teal-600 hover:to-cyan-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                    disabled={loadingAnalysis || !selectedElection || (selectedElection && selectedElection.totalVotes === 0)}
+                    className="flex items-center justify-center gap-2 px-5 py-3 text-white font-semibold bg-gradient-to-r from-teal-500 to-cyan-600 rounded-lg hover:from-teal-600 hover:to-cyan-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                     {loadingAnalysis ? <LoadingSpinner /> : <Sparkles size={18} />}
                     <span>{loadingAnalysis ? 'Generating...' : '✨ Generate AI Analysis'}</span>
@@ -369,7 +347,7 @@ const ResultsView = ({ allElections, onRefresh }) => {
 };
 
 
-// --- *** UPDATED VERIFICATION VIEW (Multi-Election) *** ---
+// --- VerificationView (Multi-Election) ---
 const VerificationView = ({ voterData }) => {
     const [explanation, setExplanation] = useState('');
     const [loading, setLoading] = useState(false);
@@ -388,8 +366,8 @@ const VerificationView = ({ voterData }) => {
         }
     };
 
-    const handleVerify = () => { /* ... same as before ... */ if (!txHash.startsWith('0x') || txHash.length !== 66) { console.warn("Invalid TX Hash format"); return; } const url = `https://www.oklink.com/amoy/tx/${txHash}`; window.open(url, '_blank'); };
-    const getExplanation = async () => { /* ... same as before ... */ setLoading(true); setExplanation(''); const prompt = ` In simple terms, what is a 'transaction hash' (or 'TX Hash') in the context of a blockchain voting app? Explain why a user would use it to verify their vote. Keep it to 2-3 sentences, easy for a non-technical person to understand. `; const generatedText = await callGemini(prompt); setExplanation(generatedText); setLoading(false); };
+    const handleVerify = () => { /* ... */ if (!txHash.startsWith('0x') || txHash.length !== 66) { console.warn("Invalid TX Hash format"); return; } const url = `https://www.oklink.com/amoy/tx/${txHash}`; window.open(url, '_blank'); };
+    const getExplanation = async () => { /* ... */ setLoading(true); setExplanation(''); const prompt = ` In simple terms, what is a 'transaction hash' (or 'TX Hash') in the context of a blockchain voting app? Explain why a user would use it to verify their vote. Keep it to 2-3 sentences, easy for a non-technical person to understand. `; const generatedText = await callGemini(prompt); setExplanation(generatedText); setLoading(false); };
 
     return (
         <div className="p-4 md:p-8">
@@ -429,7 +407,6 @@ const VerificationView = ({ voterData }) => {
                         )}
                     </select>
                 </div>
-
 
                 <div className="flex flex-col sm:flex-row gap-4">
                     <div className="relative flex-1">
@@ -492,16 +469,27 @@ export default function App() {
 
     useEffect(() => {
         // Run once on mount
+        supabase.auth.getSession().then(({ data: { session: initialSession } }) => {
+            console.log("Initial session check:", initialSession?.user?.email);
+            if (loadingAuth) { // Check if still loading
+                setSession(initialSession);
+                setLoadingAuth(false);
+            }
+        }).catch(error => {
+            console.error("Error getting initial session:", error);
+            if (loadingAuth) setLoadingAuth(false);
+        });
+
         const { data: { subscription } } = supabase.auth.onAuthStateChange(
           (_event, currentSession) => {
             console.log("Auth state changed:", _event, currentSession?.user?.email);
             setSession(currentSession);
-            setLoadingAuth(false); // Set loading to false once we get the first auth event
             if (_event === 'SIGNED_OUT') {
                 setView('home');
                 setAllElections([]);
                 setVoterData(null);
             }
+            if (loadingAuth) setLoadingAuth(false); // Ensure loading is set to false on first auth event
           }
         );
 
@@ -509,18 +497,22 @@ export default function App() {
             console.log("Unsubscribing auth listener");
             subscription?.unsubscribe(); 
         };
-    }, []); // Run only once
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []); // Only run once on mount
 
     // Effect to load data *after* session is confirmed
     useEffect(() => {
-        if (!loadingAuth && session?.user) {
-            loadAppData(session.user); // Load data
+        // Only load data if auth is no longer loading
+        if (!loadingAuth) {
+            if (session?.user) {
+                loadAppData(session.user); // Load data
+            } else {
+                 // If auth is checked but no user
+                 setAllElections([]);
+                 setVoterData(null);
+                 setAppLoading(false); // No app data to load
+            }
         }
-         if (!loadingAuth && !session?.user) { // If auth is checked but no user
-             setAllElections([]);
-             setVoterData(null);
-             setAppLoading(false); // No app data to load
-         }
     }, [session, loadingAuth, loadAppData]);
 
 
@@ -537,6 +529,8 @@ export default function App() {
          return ( <div className="flex items-center justify-center h-screen w-full bg-gray-950"><LoadingSpinner /><span className="ml-2 text-white">Loading App Data...</span></div> );
     }
 
+
+    // --- Logged-in App ---
     const renderView = () => {
         switch (view) {
         case 'home':
