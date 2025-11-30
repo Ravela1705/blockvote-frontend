@@ -5,6 +5,7 @@ import {
   Sparkles, Loader2, HelpCircle, LogIn, LogOut, UserPlus, AlertTriangle, CheckCircle, RefreshCw, GraduationCap
 } from 'lucide-react';
 import { createClient } from '@supabase/supabase-js'
+import { useRouter } from 'next/router'; // Import Router for redirection
 
 // --- 1. SUPABASE CLIENT ---
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
@@ -31,16 +32,15 @@ const LoadingSpinner = () => <Loader2 size={16} className="animate-spin" />;
 const SECTIONS = Array.from({length: 26}, (_, i) => String.fromCharCode(65 + i)); // A-Z
 const BRANCHES = ['CSE', 'ECE', 'EEE', 'MECH', 'CIVIL', 'BBA', 'BSC'];
 
-// --- UPDATED: Login View ---
+// --- Login View ---
 const LoginView = () => {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   
-  // NEW STATE VARIABLES
   const [rollNumber, setRollNumber] = useState('');
   const [section, setSection] = useState('A');
   const [branch, setBranch] = useState('CSE');
-  const [year, setYear] = useState('4'); // Default to 4th year
+  const [year, setYear] = useState('4'); 
 
   const [isRegistering, setIsRegistering] = useState(false);
   const [error, setError] = useState('');
@@ -53,19 +53,14 @@ const LoginView = () => {
 
     try {
         if (isRegistering) {
-            // Client-side Validation
             if (rollNumber.length !== 13) throw new Error("Roll Number must be exactly 13 characters.");
             
-            console.log("Registering:", { email, rollNumber, section, branch, year });
-            
-            // 1. Supabase Auth Signup
             const authResponse = await supabase.auth.signUp({ email, password });
             if (authResponse.error) throw authResponse.error;
             
             const user = authResponse.data?.user;
             if (!user) throw new Error("Signup failed. Check email confirmation.");
 
-            // 2. Call Backend to save detailed Student Profile
             const backendResponse = await fetch('/api/registerUser', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -74,13 +69,13 @@ const LoginView = () => {
                     email: user.email,
                     rollNumber: rollNumber,
                     section: section,
-                    branch: branch,     // Sending Branch
-                    year: Number(year)  // Sending Selected Year
+                    branch: branch,
+                    year: Number(year)
                 }),
             });
             const backendData = await backendResponse.json();
             if (!backendResponse.ok) {
-                await supabase.auth.signOut(); // Rollback auth if DB fails
+                await supabase.auth.signOut();
                 throw new Error(backendData.error || 'Registration failed.');
             }
 
@@ -88,7 +83,6 @@ const LoginView = () => {
             setLoading(false);
             
         } else {
-            // Login Logic
             const { error } = await supabase.auth.signInWithPassword({ email, password });
             if (error) throw error;
         }
@@ -124,12 +118,10 @@ const LoginView = () => {
                                 </select>
                             </div>
                         </div>
-
                         <div>
                             <label className="block text-sm font-medium text-gray-300 mb-1">University Roll No</label>
                             <input type="text" value={rollNumber} onChange={(e) => setRollNumber(e.target.value.toUpperCase())} className="w-full px-4 py-3 bg-gray-800 text-white border border-gray-700 rounded-lg" placeholder="AP22110010001" maxLength={13} required />
                         </div>
-
                         <div>
                             <label className="block text-sm font-medium text-gray-300 mb-1">Section</label>
                             <select value={section} onChange={(e) => setSection(e.target.value)} className="w-full px-4 py-3 bg-gray-800 text-white border border-gray-700 rounded-lg">
@@ -138,7 +130,6 @@ const LoginView = () => {
                         </div>
                     </>
                 )}
-
                 <div>
                     <label className="block text-sm font-medium text-gray-300 mb-1">Email</label>
                     <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} className="w-full px-4 py-3 bg-gray-800 text-white border border-gray-700 rounded-lg" placeholder="student@srmap.edu.in" required />
@@ -147,10 +138,8 @@ const LoginView = () => {
                     <label className="block text-sm font-medium text-gray-300 mb-1">Password</label>
                     <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} className="w-full px-4 py-3 bg-gray-800 text-white border border-gray-700 rounded-lg" placeholder="••••••••" required />
                 </div> 
-
                 {error && <div className="p-3 text-sm text-red-200 bg-red-900/50 border border-red-700 rounded-lg flex items-center"><AlertTriangle className="w-4 h-4 mr-2" /> {error}</div>} 
                 {successMessage && <div className="p-3 text-sm text-green-200 bg-green-900/50 border border-green-700 rounded-lg flex items-center"><CheckCircle className="w-4 h-4 mr-2" /> {successMessage}</div>} 
-                
                 <button type="submit" disabled={loading} className="w-full py-3 text-white font-semibold bg-indigo-600 rounded-lg hover:bg-indigo-700 flex justify-center items-center gap-2"> 
                     {loading ? <LoadingSpinner /> : (isRegistering ? <UserPlus size={20} /> : <LogIn size={20} />)} 
                     <span>{loading ? 'Processing...' : (isRegistering ? 'Register' : 'Login')}</span> 
@@ -344,40 +333,71 @@ export default function App() {
     const [session, setSession] = useState(null);
     const [loadingAuth, setLoadingAuth] = useState(true);
     
-    // DATA STATES
     const [allElections, setAllElections] = useState([]);
     const [voterData, setVoterData] = useState(null);
     const [userProfile, setUserProfile] = useState(null); 
+    const router = useRouter();
 
-    const loadAppData = useCallback(async () => {
-        const { data: { session } } = await supabase.auth.getSession();
-        if (!session) return;
-        
+    // --- NEW: Check User Role & Redirect if Admin ---
+    const checkUserRoleAndRedirect = async (user) => {
+        // 1. Check if they are in 'voters' table
+        const { data: voter, error } = await supabase
+            .from('voters')
+            .select('id')
+            .eq('id', user.id)
+            .single();
+
+        if (voter) {
+            // Is Student -> Load Data
+            loadAppData(user);
+        } else {
+            // Not a student? Check if Admin
+            const { data: admin } = await supabase
+                .from('admins')
+                .select('id')
+                .eq('id', user.id)
+                .single();
+            
+            if (admin) {
+                // Is Admin -> Redirect to /admin
+                console.log("Admin detected on student page. Redirecting...");
+                router.push('/admin');
+            } else {
+                // Ghost User (neither) -> Logout
+                console.warn("User has no role. Logging out.");
+                await supabase.auth.signOut();
+                setSession(null);
+            }
+        }
+    };
+
+    const loadAppData = useCallback(async (user) => {
+        if (!user) return;
         try {
-            // Fetch Elections
-            const elRes = await fetch('/api/getElections', { headers: { 'Authorization': `Bearer ${session.access_token}` } });
+            const elRes = await fetch('/api/getElections', { headers: { 'Authorization': `Bearer ${session?.access_token}` } });
             const elData = await elRes.json();
             setAllElections(elData.allElections || []);
 
-            // Fetch User Profile
-            const vRes = await fetch('/api/getVoteDetails', { headers: { 'Authorization': `Bearer ${session.access_token}` } });
+            const vRes = await fetch('/api/getVoteDetails', { headers: { 'Authorization': `Bearer ${session?.access_token}` } });
             const vData = await vRes.json();
             setVoterData(vData.votes_cast || {});
             setUserProfile(vData.profile || null);
         } catch (e) { console.error(e); }
-    }, []);
+    }, [session]);
 
     useEffect(() => {
         supabase.auth.getSession().then(({ data: { session } }) => {
-            setSession(session); setLoadingAuth(false);
-            if(session) loadAppData();
+            setSession(session); 
+            setLoadingAuth(false);
+            if(session?.user) checkUserRoleAndRedirect(session.user);
         });
+
         const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
             setSession(session);
-            if(session) loadAppData();
+            if(session?.user) checkUserRoleAndRedirect(session.user);
         });
         return () => subscription?.unsubscribe();
-    }, [loadAppData]);
+    }, []); // Removed 'loadAppData' from dependency to avoid loop
 
     if (loadingAuth) return <div className="h-screen bg-gray-950 flex items-center justify-center"><LoadingSpinner/></div>;
     if (!session) return <LoginView />;
@@ -391,8 +411,8 @@ export default function App() {
                     <AnimatePresence mode="wait">
                         <motion.div key={view} initial={{ opacity: 0, y: 15 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -15 }}>
                             {view === 'home' && <DashboardHome allElections={allElections} voterData={voterData} userProfile={userProfile} />}
-                            {view === 'elections' && <ElectionView allElections={allElections} voterData={voterData} onVoteCasted={loadAppData} />}
-                            {view === 'results' && <ResultsView allElections={allElections} onRefresh={loadAppData} />}
+                            {view === 'elections' && <ElectionView allElections={allElections} voterData={voterData} onVoteCasted={() => loadAppData(session.user)} />}
+                            {view === 'results' && <ResultsView allElections={allElections} onRefresh={() => loadAppData(session.user)} />}
                             {view === 'verification' && <VerificationView voterData={voterData} />}
                         </motion.div>
                     </AnimatePresence>
