@@ -1,57 +1,69 @@
 import { ethers } from 'ethers';
-import { Buffer } from 'buffer';
 
+// --- CONFIGURATION ---
 const ADMIN_PRIVATE_KEY = process.env.ADMIN_PRIVATE_KEY;
 const CONTRACT_ADDRESS = process.env.NEXT_PUBLIC_CONTRACT_ADDRESS;
 const RPC_URL = process.env.NEXT_PUBLIC_RPC_URL;
 
+// --- HARDCODED NEW ABI (Bypasses Env Variable Issues) ---
+const CONTRACT_ABI = [
+  {
+    "inputs": [
+      { "internalType": "string", "name": "_name", "type": "string" },
+      { "internalType": "string[]", "name": "_candidateNames", "type": "string[]" },
+      { "internalType": "uint256", "name": "_durationSeconds", "type": "uint256" },
+      { "internalType": "uint256", "name": "_targetYear", "type": "uint256" },
+      { "internalType": "string", "name": "_targetSection", "type": "string" }
+    ],
+    "name": "createElection",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      { "indexed": true, "internalType": "uint256", "name": "electionId", "type": "uint256" },
+      { "indexed": false, "internalType": "string", "name": "name", "type": "string" },
+      { "indexed": false, "internalType": "uint256", "name": "startTime", "type": "uint256" },
+      { "indexed": false, "internalType": "uint256", "name": "endTime", "type": "uint256" },
+      { "indexed": false, "internalType": "uint256", "name": "targetYear", "type": "uint256" },
+      { "indexed": false, "internalType": "string", "name": "targetSection", "type": "string" }
+    ],
+    "name": "ElectionCreated",
+    "type": "event"
+  }
+];
+
 export default async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method Not Allowed' });
 
-  console.log("--- DEBUG START: Create Election ---");
-
   try {
-    // 1. Decode and Log ABI Structure
-    const abiBase64 = process.env.NEXT_PUBLIC_CONTRACT_ABI;
-    if (!abiBase64) throw new Error("Missing NEXT_PUBLIC_CONTRACT_ABI");
+    console.log("--- Creating Election (Hardcoded ABI) ---");
 
-    const abiString = Buffer.from(abiBase64, 'base64').toString('utf-8');
-    const parsedABI = JSON.parse(abiString);
-
-    // FIND THE FUNCTION IN THE ABI
-    const functionDef = parsedABI.find(item => item.name === 'createElection' && item.type === 'function');
-    
-    if (functionDef) {
-        console.log("DEBUG: ABI 'createElection' inputs found:", functionDef.inputs.length);
-        console.log("DEBUG: Input Names:", functionDef.inputs.map(i => i.name));
-        
-        // CRITICAL CHECK
-        if (functionDef.inputs.length === 3) {
-            console.error("CRITICAL ERROR: The Loaded ABI is OLD (3 inputs). It needs 5 inputs.");
-            return res.status(500).json({ error: "Configuration Error: Vercel has the OLD ABI. Please update Env Vars." });
-        }
-    } else {
-        console.error("DEBUG: 'createElection' function NOT found in ABI.");
-    }
-
-    // 2. Connect to Contract
+    // 1. Connect to Blockchain
     const provider = new ethers.providers.JsonRpcProvider(RPC_URL);
     const wallet = new ethers.Wallet(ADMIN_PRIVATE_KEY, provider);
-    const contract = new ethers.Contract(CONTRACT_ADDRESS, parsedABI, wallet);
+    const contract = new ethers.Contract(CONTRACT_ADDRESS, CONTRACT_ABI, wallet);
 
-    // 3. Prepare Data
+    // 2. Get Data
     const { title, candidates, durationHours, targetYear, targetSection } = req.body;
-    console.log("DEBUG: Received Data ->", { title, candidates, durationHours, targetYear, targetSection });
-
+    
     if (!title || !candidates || !durationHours || !targetYear || !targetSection) {
-         return res.status(400).json({ error: 'Missing required fields.' });
+         return res.status(400).json({ error: 'Missing required fields (Year/Section).' });
     }
 
     const durationSeconds = durationHours * 60 * 60;
-    const gasOverrides = { maxPriorityFeePerGas: ethers.utils.parseUnits('30', 'gwei'), maxFeePerGas: ethers.utils.parseUnits('100', 'gwei') };
+    
+    console.log(`Sending: Title="${title}", Year=${targetYear}, Sec="${targetSection}"`);
 
-    // 4. Send Transaction
-    console.log("DEBUG: Sending transaction with 5 arguments...");
+    // 3. Send Transaction
+    // Gas override to ensure it goes through on Amoy
+    const gasOverrides = { 
+        maxPriorityFeePerGas: ethers.utils.parseUnits('30', 'gwei'), 
+        maxFeePerGas: ethers.utils.parseUnits('100', 'gwei') 
+    };
+
     const tx = await contract.createElection(
         title, 
         candidates, 
@@ -61,9 +73,10 @@ export default async function handler(req, res) {
         gasOverrides
     );
 
-    console.log("DEBUG: Transaction Sent:", tx.hash);
+    console.log("Tx Sent:", tx.hash);
     const receipt = await tx.wait();
     
+    // 4. Get ID from Event
     let electionId = "N/A";
     if (receipt.events) { 
         const event = receipt.events.find(e => e.event === 'ElectionCreated'); 
@@ -74,7 +87,6 @@ export default async function handler(req, res) {
 
   } catch (error) {
     console.error('Create Election Error:', error);
-    res.status(500).json({ error: error.message, details: error });
+    res.status(500).json({ error: error.message || 'Server Error' });
   }
 }
-
