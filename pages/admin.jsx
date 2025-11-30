@@ -1,16 +1,12 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { supabase } from '../lib/supabaseClient'; 
-import { ethers } from 'ethers'; 
-import { Buffer } from 'buffer'; 
 import { 
   Plus, Trash2, Loader2, AlertTriangle, CheckCircle, ListPlus, Clock, 
   LogIn, User, Shield, BarChart3, List, LogOut, RefreshCw, Users 
 } from 'lucide-react';
 
 const LoadingSpinner = () => <Loader2 size={16} className="animate-spin" />;
-
-// --- Helper: Generate A-Z Sections ---
 const SECTIONS = Array.from({length: 26}, (_, i) => String.fromCharCode(65 + i)); // A-Z
 
 // --- Admin Login ---
@@ -46,7 +42,7 @@ const AdminLogin = () => {
     );
 };
 
-// --- UPDATED: Create Election View ---
+// --- Create Election View ---
 const CreateElectionView = () => {
     const [electionTitle, setElectionTitle] = useState('');
     const [candidates, setCandidates] = useState(['', '']);
@@ -141,7 +137,7 @@ const CreateElectionView = () => {
     );
 };
 
-// --- View Results View ---
+// --- UPDATED: View Results View ---
 const ViewResultsView = () => {
     const [allElections, setAllElections] = useState([]);
     const [loading, setLoading] = useState(true);
@@ -149,7 +145,22 @@ const ViewResultsView = () => {
     const fetchAllElectionData = useCallback(async () => {
         setLoading(true); 
         try {
-            const response = await fetch('/api/getElections'); 
+            // --- FIX START: Add Authorization Header ---
+            const { data: { session } } = await supabase.auth.getSession();
+            const token = session?.access_token;
+            
+            if (!token) {
+                console.error("No admin session found.");
+                return;
+            }
+
+            const response = await fetch('/api/getElections', {
+                headers: {
+                    'Authorization': `Bearer ${token}` // <--- THIS WAS MISSING
+                }
+            });
+            // --- FIX END ---
+
             const data = await response.json();
             setAllElections(data.allElections || []);
         } catch (err) { console.error(err); }
