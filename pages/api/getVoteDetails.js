@@ -1,49 +1,41 @@
 import { createClient } from '@supabase/supabase-js'
 
-// --- Supabase Admin Client ---
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY
-if (!supabaseUrl || !supabaseServiceKey) throw new Error("Server config error: Supabase credentials missing.")
+if (!supabaseUrl || !supabaseServiceKey) throw new Error("Config missing.")
 const supabaseAdmin = createClient(supabaseUrl, supabaseServiceKey)
-// --- End Supabase ---
-
 
 export default async function handler(req, res) {
   if (req.method !== 'GET') return res.status(405).json({ error: 'Method Not Allowed' });
 
   try {
-    // --- Verify Supabase JWT Token ---
     const token = req.headers.authorization?.split('Bearer ')[1];
-    if (!token) return res.status(401).json({ error: 'Authentication required.' });
-    const { data: { user }, error: userError } = await supabaseAdmin.auth.getUser(token);
-    if (userError || !user) { console.error("Token verification error:", userError); return res.status(401).json({ error: `Authentication failed: ${userError?.message || 'Invalid token'}` }); }
-    const userId = user.id;
-    console.log("Verified Supabase user for getVoteDetails:", userId);
-    // --- End Verification ---
+    if (!token) return res.status(401).json({ error: 'Auth required.' });
+    
+    const { data: { user }, error: uErr } = await supabaseAdmin.auth.getUser(token);
+    if (uErr || !user) return res.status(401).json({ error: 'Invalid token.' });
 
-
-    // 3. Get the user's voter registration document
-    // --- UPDATED: Select the new 'votes_cast' column ---
+    // Fetch Profile Info + Voting History
     const { data: voterData, error: dbError } = await supabaseAdmin
         .from('voters')
-        .select('votes_cast') // <-- Select the new JSONB column
-        .eq('id', userId)
+        .select('votes_cast, roll_number, academic_year, section') // Added fields
+        .eq('id', user.id)
         .single();
 
-    if (dbError && dbError.code !== 'PGRST116') { // Ignore 'Row not found'
-        console.error("Supabase DB select error:", dbError);
-        throw new Error(`Supabase DB error: ${dbError.message}`);
-    }
+    if (dbError && dbError.code !== 'PGRST116') throw new Error(dbError.message);
 
-    // 4. Send back their vote details
-    // --- UPDATED: Return the whole votes_cast object (or an empty one) ---
     res.status(200).json({
-      votes_cast: voterData?.votes_cast || {}
+      votes_cast: voterData?.votes_cast || {},
+      // Return profile data so frontend can show "Welcome, AP22..."
+      profile: {
+          rollNumber: voterData?.roll_number,
+          year: voterData?.academic_year,
+          section: voterData?.section
+      }
     });
-    // --- END UPDATED ---
 
   } catch (error) {
     console.error('Error in getVoteDetails:', error);
-    res.status(500).json({ error: error.message || 'An unknown server error occurred.' });
+    res.status(500).json({ error: error.message });
   }
 }

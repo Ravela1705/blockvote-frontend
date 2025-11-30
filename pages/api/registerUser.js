@@ -1,16 +1,12 @@
 import { createClient } from '@supabase/supabase-js'
 
-// Create Supabase client with the SERVICE_ROLE_KEY for admin actions
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY
 
 if (!supabaseUrl || !supabaseServiceKey) {
-    console.error("CRITICAL ERROR: Supabase URL or Service Role Key missing in API route.")
     throw new Error("Server configuration error: Supabase credentials missing.")
 }
 
-// Note: Creating a new client in each API route is standard for serverless
-// Ensure SERVICE_ROLE_KEY is kept secret and only used on the server
 const supabaseAdmin = createClient(supabaseUrl, supabaseServiceKey)
 
 export default async function handler(req, res) {
@@ -18,48 +14,68 @@ export default async function handler(req, res) {
         return res.status(405).json({ error: 'Method Not Allowed' });
     }
 
-    // Get userId and email from the request body (sent by client after signup)
-    const { userId, email } = req.body;
+    // NEW: Receive extra data (Roll No, Section)
+    const { userId, email, rollNumber, section } = req.body;
 
-    if (!userId || !email) {
-        return res.status(400).json({ error: 'User ID and email are required.' });
+    if (!userId || !email || !rollNumber || !section) {
+        return res.status(400).json({ error: 'User ID, Email, Roll Number, and Section are required.' });
     }
 
-    try {
-        console.log("API: Adding user to Supabase 'voters' table:", userId, email);
+    // --- NEW: Roll Number Validation Logic ---
+    const cleanRollNo = rollNumber.trim().toUpperCase();
+    const cleanSection = section.trim().toUpperCase();
 
-        // Insert the user into the 'voters' table using the Admin client
+    // 1. Check Length (Must be 13 digits)
+    if (cleanRollNo.length !== 13) {
+        return res.status(400).json({ error: 'Roll Number must be exactly 13 characters.' });
+    }
+
+    // 2. Determine Year based on Prefix
+    // Logic: AP22 -> 4th, AP23 -> 3rd, AP24 -> 2nd, AP25 -> 1st
+    let academicYear = 0;
+    
+    if (cleanRollNo.startsWith('AP221100')) {
+        academicYear = 4;
+    } else if (cleanRollNo.startsWith('AP231100')) {
+        academicYear = 3;
+    } else if (cleanRollNo.startsWith('AP241100')) {
+        academicYear = 2;
+    } else if (cleanRollNo.startsWith('AP251100')) {
+        academicYear = 1;
+    } else {
+        return res.status(400).json({ error: 'Invalid Roll Number format. Must start with AP22, AP23, AP24, or AP25.' });
+    }
+    // ------------------------------------------
+
+    try {
+        console.log(`Registering: ${email}, Year: ${academicYear}, Section: ${cleanSection}`);
+
         const { data, error } = await supabaseAdmin
             .from('voters')
             .insert([
                 {
-                    id: userId, // Use the user ID from Supabase Auth as the primary key
+                    id: userId,
                     email: email,
-                    votes_cast: {} // --- UPDATED: Initialize the new JSONB column as an empty object ---
+                    roll_number: cleanRollNo,    // Save Roll No
+                    academic_year: academicYear, // Save Calculated Year
+                    section: cleanSection,       // Save Section
+                    votes_cast: {}
                 }
             ])
-            .select(); // Optionally select to confirm insertion
+            .select();
 
         if (error) {
-            // Handle potential errors, e.g., duplicate primary key (user already exists)
             console.error('Supabase DB insert error:', error);
-            // Check for unique violation (Postgres code 23505)
             if (error.code === '23505') {
-                 // This might happen if the API is called twice, which is okay.
-                 console.warn(`User ${userId} already exists in voters table.`);
-                 // Consider returning success even if they already exist
-                 return res.status(200).json({ success: true, uid: userId, message: 'User already exists in DB.' });
+                 return res.status(200).json({ success: true, message: 'User already exists.' });
             }
-            throw new Error(`Supabase DB error: ${error.message}`);
+            throw new Error(error.message);
         }
 
-        console.log("User added to Supabase 'voters' table successfully:", data);
-
-        // Send a success message back
         res.status(200).json({ success: true, uid: userId });
 
     } catch (error) {
-        console.error('Error in registerUser API (DB write):', error);
-        res.status(500).json({ error: error.message || 'Failed to complete registration on server.' });
+        console.error('Error in registerUser API:', error);
+        res.status(500).json({ error: error.message });
     }
 }
