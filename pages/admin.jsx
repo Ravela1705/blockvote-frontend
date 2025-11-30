@@ -10,6 +10,10 @@ import {
 
 const LoadingSpinner = () => <Loader2 size={16} className="animate-spin" />;
 
+// --- Helper: Generate A-Z Sections ---
+const SECTIONS = Array.from({length: 26}, (_, i) => String.fromCharCode(65 + i)); // A-Z
+
+// --- Admin Login ---
 const AdminLogin = () => {
     const [email, setEmail] = useState('');
     const [password, setPassword] = useState('');
@@ -18,14 +22,11 @@ const AdminLogin = () => {
 
     const handleLogin = async (e) => {
         e.preventDefault();
-        setLoading(true);
-        setError('');
+        setLoading(true); setError('');
         try {
             const { error } = await supabase.auth.signInWithPassword({ email, password });
             if (error) throw error;
-        } catch (err) {
-            setError("Invalid login credentials.");
-        }
+        } catch (err) { setError("Invalid login credentials."); }
         setLoading(false);
     };
 
@@ -36,9 +37,9 @@ const AdminLogin = () => {
                 <h2 className="text-3xl font-bold text-center text-white mb-2">Admin Panel</h2>
                 {error && <div className="p-3 mb-4 text-sm text-red-200 bg-red-900/50 border border-red-700 rounded-lg flex items-center"><AlertTriangle className="w-4 h-4 mr-2" /> {error}</div>}
                 <form onSubmit={handleLogin}>
-                    <div className="mb-4"><label className="block mb-2 text-sm text-gray-300">Email</label><input type="email" value={email} onChange={(e) => setEmail(e.target.value)} className="w-full px-4 py-3 bg-gray-800 border-gray-700 rounded-lg text-white focus:ring-2 focus:ring-indigo-500" required /></div>
-                    <div className="mb-6"><label className="block mb-2 text-sm text-gray-300">Password</label><input type="password" value={password} onChange={(e) => setPassword(e.target.value)} className="w-full px-4 py-3 bg-gray-800 border-gray-700 rounded-lg text-white focus:ring-2 focus:ring-indigo-500" required /></div>
-                    <button type="submit" disabled={loading} className="w-full py-3 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-all flex justify-center">{loading ? <LoadingSpinner /> : 'Login'}</button>
+                    <div className="mb-4"><label className="block mb-2 text-sm text-gray-300">Email</label><input type="email" value={email} onChange={(e) => setEmail(e.target.value)} className="w-full px-4 py-3 bg-gray-800 border-gray-700 rounded-lg text-white" required /></div>
+                    <div className="mb-6"><label className="block mb-2 text-sm text-gray-300">Password</label><input type="password" value={password} onChange={(e) => setPassword(e.target.value)} className="w-full px-4 py-3 bg-gray-800 border-gray-700 rounded-lg text-white" required /></div>
+                    <button type="submit" disabled={loading} className="w-full py-3 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 flex justify-center">{loading ? <LoadingSpinner /> : 'Login'}</button>
                 </form>
             </motion.div>
         </div>
@@ -50,10 +51,8 @@ const CreateElectionView = () => {
     const [electionTitle, setElectionTitle] = useState('');
     const [candidates, setCandidates] = useState(['', '']);
     const [duration, setDuration] = useState(24);
-    
-    // NEW STATES
-    const [targetYear, setTargetYear] = useState('4'); // Default 4th year
-    const [targetSection, setTargetSection] = useState('A'); // Default Section A
+    const [targetYear, setTargetYear] = useState('4');
+    const [targetSection, setTargetSection] = useState('A'); 
 
     const [loading, setLoading] = useState(false);
     const [message, setMessage] = useState({ type: '', text: '' });
@@ -75,7 +74,6 @@ const CreateElectionView = () => {
                     title: electionTitle.trim(), 
                     candidates: filledCandidates, 
                     durationHours: Number(duration),
-                    // SEND NEW FIELDS
                     targetYear: Number(targetYear),
                     targetSection: targetSection 
                 }),
@@ -84,9 +82,7 @@ const CreateElectionView = () => {
             if (!response.ok) throw new Error(data.error || 'Failed to create election.');
             setMessage({ type: 'success', text: `Election created successfully! ID: ${data.electionId}` });
             setElectionTitle(''); setCandidates(['', '']); 
-        } catch (err) {
-            setMessage({ type: 'error', text: err.message || 'Error occurred.' });
-        }
+        } catch (err) { setMessage({ type: 'error', text: err.message || 'Error occurred.' }); }
         setLoading(false);
     };
 
@@ -101,7 +97,6 @@ const CreateElectionView = () => {
                     <input type="text" value={electionTitle} onChange={(e) => setElectionTitle(e.target.value)} className="w-full px-4 py-3 bg-gray-900 border border-gray-700 rounded-lg text-white" placeholder="e.g., Class Representative" required />
                 </div>
 
-                {/* --- NEW: Target Audience Inputs --- */}
                 <div className="grid grid-cols-2 gap-4">
                     <div>
                         <label className="block text-sm font-medium text-gray-300 mb-2">Target Year</label>
@@ -115,13 +110,10 @@ const CreateElectionView = () => {
                     <div>
                         <label className="block text-sm font-medium text-gray-300 mb-2">Target Section</label>
                         <select value={targetSection} onChange={(e) => setTargetSection(e.target.value)} className="w-full px-4 py-3 bg-gray-900 border border-gray-700 rounded-lg text-white">
-                            {['A','B','C','D','E','F'].map(sec => (
-                                <option key={sec} value={sec}>Section {sec}</option>
-                            ))}
+                            {SECTIONS.map(sec => <option key={sec} value={sec}>Section {sec}</option>)}
                         </select>
                     </div>
                 </div>
-                {/* ----------------------------------- */}
 
                 <div>
                     <label className="block text-sm font-medium text-gray-300 mb-2">Candidates</label>
@@ -149,6 +141,7 @@ const CreateElectionView = () => {
     );
 };
 
+// --- View Results View ---
 const ViewResultsView = () => {
     const [allElections, setAllElections] = useState([]);
     const [loading, setLoading] = useState(true);
@@ -178,7 +171,6 @@ const ViewResultsView = () => {
                 <div key={election.id} className="bg-gray-800 p-6 rounded-lg border border-gray-700">
                     <div className="flex justify-between">
                         <h3 className="text-xl font-bold text-white">{election.title}</h3>
-                        {/* Show Target Audience in Results */}
                         <span className="text-sm bg-gray-700 px-3 py-1 rounded-full text-indigo-300">
                             Year {election.targetYear} - Sec {election.targetSection}
                         </span>

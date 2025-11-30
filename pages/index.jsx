@@ -5,7 +5,6 @@ import {
   Sparkles, Loader2, HelpCircle, LogIn, LogOut, UserPlus, AlertTriangle, CheckCircle, RefreshCw, GraduationCap
 } from 'lucide-react';
 import { createClient } from '@supabase/supabase-js'
-import { Buffer } from 'buffer';
 
 // --- 1. SUPABASE CLIENT ---
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
@@ -28,6 +27,10 @@ const callGemini = async (prompt) => {
 // --- Reusable Components ---
 const LoadingSpinner = () => <Loader2 size={16} className="animate-spin" />;
 
+// --- Helper Data ---
+const SECTIONS = Array.from({length: 26}, (_, i) => String.fromCharCode(65 + i)); // A-Z
+const BRANCHES = ['CSE', 'ECE', 'EEE', 'MECH', 'CIVIL', 'BBA', 'BSC'];
+
 // --- UPDATED: Login View ---
 const LoginView = () => {
   const [email, setEmail] = useState('');
@@ -36,6 +39,8 @@ const LoginView = () => {
   // NEW STATE VARIABLES
   const [rollNumber, setRollNumber] = useState('');
   const [section, setSection] = useState('A');
+  const [branch, setBranch] = useState('CSE');
+  const [year, setYear] = useState('4'); // Default to 4th year
 
   const [isRegistering, setIsRegistering] = useState(false);
   const [error, setError] = useState('');
@@ -48,37 +53,34 @@ const LoginView = () => {
 
     try {
         if (isRegistering) {
-            // 1. Validate Roll No format on Client Side before sending
+            // Client-side Validation
             if (rollNumber.length !== 13) throw new Error("Roll Number must be exactly 13 characters.");
-            const prefix = rollNumber.substring(0, 8).toUpperCase(); // e.g. AP2211
-            if (!['AP221100','AP231100','AP241100','AP251100'].includes(prefix)) {
-                 throw new Error("Invalid Roll Number. Must start with AP221100, AP231100, AP241100, or AP251100.");
-            }
-
-            console.log("Registering:", email, rollNumber, section);
             
-            // 2. Supabase Auth Signup
+            console.log("Registering:", { email, rollNumber, section, branch, year });
+            
+            // 1. Supabase Auth Signup
             const authResponse = await supabase.auth.signUp({ email, password });
             if (authResponse.error) throw authResponse.error;
             
             const user = authResponse.data?.user;
             if (!user) throw new Error("Signup failed. Check email confirmation.");
 
-            // 3. Call Backend to save Roll No & Section
+            // 2. Call Backend to save detailed Student Profile
             const backendResponse = await fetch('/api/registerUser', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ 
                     userId: user.id, 
                     email: user.email,
-                    rollNumber: rollNumber,  // Sending Roll No
-                    section: section         // Sending Section
+                    rollNumber: rollNumber,
+                    section: section,
+                    branch: branch,     // Sending Branch
+                    year: Number(year)  // Sending Selected Year
                 }),
             });
             const backendData = await backendResponse.json();
             if (!backendResponse.ok) {
-                // Rollback: If backend fails (e.g. invalid roll no), sign user out
-                await supabase.auth.signOut();
+                await supabase.auth.signOut(); // Rollback auth if DB fails
                 throw new Error(backendData.error || 'Registration failed.');
             }
 
@@ -86,7 +88,7 @@ const LoginView = () => {
             setLoading(false);
             
         } else {
-            // Login Logic (Unchanged)
+            // Login Logic
             const { error } = await supabase.auth.signInWithPassword({ email, password });
             if (error) throw error;
         }
@@ -98,22 +100,40 @@ const LoginView = () => {
 
   return ( 
     <div className="flex items-center justify-center min-h-screen w-full bg-gray-950"> 
-        <motion.div initial={{ opacity: 0, y: -20 }} animate={{ opacity: 1, y: 0 }} className="w-full max-w-md p-8 bg-gray-900 border border-gray-700/50 rounded-lg shadow-2xl"> 
+        <motion.div initial={{ opacity: 0, y: -20 }} animate={{ opacity: 1, y: 0 }} className="w-full max-w-md p-8 bg-gray-900 border border-gray-700/50 rounded-lg shadow-2xl my-10"> 
             <h1 className="text-3xl font-bold text-white mb-4 text-center flex items-center justify-center"><FileText className="text-indigo-400 mr-2" />BlockVote</h1> 
             <p className="text-gray-400 text-center mb-6">{isRegistering ? 'Student Registration' : 'Student Login'}</p> 
             
             <form onSubmit={handleAuth} className="space-y-4"> 
                 {isRegistering && (
                     <>
+                        <div className="grid grid-cols-2 gap-4">
+                            <div>
+                                <label className="block text-sm font-medium text-gray-300 mb-1">Branch</label>
+                                <select value={branch} onChange={(e) => setBranch(e.target.value)} className="w-full px-4 py-3 bg-gray-800 text-white border border-gray-700 rounded-lg">
+                                    {BRANCHES.map(b => <option key={b} value={b}>{b}</option>)}
+                                </select>
+                            </div>
+                            <div>
+                                <label className="block text-sm font-medium text-gray-300 mb-1">Year</label>
+                                <select value={year} onChange={(e) => setYear(e.target.value)} className="w-full px-4 py-3 bg-gray-800 text-white border border-gray-700 rounded-lg">
+                                    <option value="1">1st Year (AP25)</option>
+                                    <option value="2">2nd Year (AP24)</option>
+                                    <option value="3">3rd Year (AP23)</option>
+                                    <option value="4">4th Year (AP22)</option>
+                                </select>
+                            </div>
+                        </div>
+
                         <div>
                             <label className="block text-sm font-medium text-gray-300 mb-1">University Roll No</label>
                             <input type="text" value={rollNumber} onChange={(e) => setRollNumber(e.target.value.toUpperCase())} className="w-full px-4 py-3 bg-gray-800 text-white border border-gray-700 rounded-lg" placeholder="AP22110010001" maxLength={13} required />
-                            <p className="text-xs text-gray-500 mt-1">Must start with AP22, AP23, AP24, or AP25 (13 chars)</p>
                         </div>
+
                         <div>
                             <label className="block text-sm font-medium text-gray-300 mb-1">Section</label>
                             <select value={section} onChange={(e) => setSection(e.target.value)} className="w-full px-4 py-3 bg-gray-800 text-white border border-gray-700 rounded-lg">
-                                {['A','B','C','D','E','F'].map(s => <option key={s} value={s}>Section {s}</option>)}
+                                {SECTIONS.map(s => <option key={s} value={s}>Section {s}</option>)}
                             </select>
                         </div>
                     </>
@@ -121,7 +141,7 @@ const LoginView = () => {
 
                 <div>
                     <label className="block text-sm font-medium text-gray-300 mb-1">Email</label>
-                    <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} className="w-full px-4 py-3 bg-gray-800 text-white border border-gray-700 rounded-lg" placeholder="student@university.edu" required />
+                    <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} className="w-full px-4 py-3 bg-gray-800 text-white border border-gray-700 rounded-lg" placeholder="student@srmap.edu.in" required />
                 </div> 
                 <div>
                     <label className="block text-sm font-medium text-gray-300 mb-1">Password</label>
@@ -150,14 +170,14 @@ const LoginView = () => {
 
 // --- Sidebar ---
 const Sidebar = ({ view, setView, isMobileMenuOpen, setIsMobileMenuOpen }) => {
-    const navItems = [ { name: 'home', icon: HomeIcon, view: 'home' }, { name: 'elections', icon: Vote, view: 'elections' }, { name: 'results', icon: BarChart3, view: 'results' }, { name: 'verification', icon: ShieldCheck, view: 'verification' }, ];
+    const navItems = [ { name: 'Dashboard', icon: HomeIcon, view: 'home' }, { name: 'Elections', icon: Vote, view: 'elections' }, { name: 'Results', icon: BarChart3, view: 'results' }, { name: 'Verify', icon: ShieldCheck, view: 'verification' }, ];
     const NavLink = ({ item }) => ( <button onClick={() => { setView(item.view); if (isMobileMenuOpen) setIsMobileMenuOpen(false); }} className={`flex items-center w-full px-4 py-3 text-left ${view === item.view ? 'bg-indigo-600 text-white' : 'text-gray-300 hover:bg-gray-700 hover:text-white'} transition-colors duration-200 rounded-lg`} > <item.icon size={20} className="mr-3" /> <span className="font-medium">{item.name}</span> </button> );
     return ( <> <AnimatePresence>{isMobileMenuOpen && ( <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 z-30 bg-black/50 lg:hidden" onClick={() => setIsMobileMenuOpen(false)} /> )}</AnimatePresence> <motion.div initial={{ x: '-100%' }} animate={{ x: isMobileMenuOpen ? '0%' : '-100%' }} className="fixed top-0 left-0 h-full w-64 bg-gray-900 border-r border-gray-700/50 p-4 z-40 lg:hidden"> <h1 className="text-2xl font-bold text-white mb-6 flex items-center"><FileText className="text-indigo-400 mr-2" />BlockVote</h1> <nav className="flex flex-col gap-2">{navItems.map(item => <NavLink key={item.name} item={item} />)}</nav> </motion.div> <div className="hidden lg:flex lg:flex-col lg:w-64 h-full min-h-screen bg-gray-900 border-r border-gray-700/50 p-5"> <h1 className="text-3xl font-bold text-white mb-8 flex items-center"><FileText className="text-indigo-400 mr-2" />BlockVote</h1> <nav className="flex flex-col gap-2">{navItems.map(item => <NavLink key={item.name} item={item} />)}</nav> <div className="mt-auto text-gray-500 text-xs"><p>© 2025 BlockVote.</p></div> </div> </> );
 };
 
-// --- Header (Shows Profile Info) ---
+// --- Header ---
 const Header = ({ view, setIsMobileMenuOpen, userEmail }) => {
-    const viewTitles = { home: 'Dashboard', elections: 'Your Elections', results: 'Live Results', verification: 'Verify Vote' };
+    const viewTitles = { home: 'Student Dashboard', elections: 'Active Elections', results: 'Live Results', verification: 'Verify Vote' };
     return ( <header className="flex items-center justify-between w-full h-20 px-4 md:px-8 border-b border-gray-700/50"> <div className="flex items-center gap-2"> <button className="lg:hidden p-2 -ml-2 text-gray-300" onClick={() => setIsMobileMenuOpen(true)}> <Menu size={24} /> </button> <h2 className="text-xl md:text-2xl font-semibold text-white">{viewTitles[view]}</h2> </div> <div className="flex items-center gap-4"> <span className="hidden sm:block text-sm text-gray-400">{userEmail}</span> <button onClick={() => supabase.auth.signOut()} className="flex items-center gap-2 px-4 py-2 text-sm font-semibold text-white bg-gray-700 rounded-lg hover:bg-gray-600" > <LogOut size={18} /> <span>Logout</span> </button> </div> </header> );
 };
 
@@ -218,7 +238,7 @@ const ElectionView = ({ allElections, voterData, onVoteCasted }) => {
     );
 };
 
-// --- UPDATED: DashboardHome (Shows User Profile) ---
+// --- DashboardHome ---
 const DashboardHome = ({ allElections, voterData, userProfile }) => {
     const votesCastByUser = voterData ? Object.keys(voterData).length : 0;
     
@@ -229,8 +249,8 @@ const DashboardHome = ({ allElections, voterData, userProfile }) => {
             <h3 className="text-2xl font-bold text-white mb-1">Welcome Back!</h3>
             {userProfile ? (
                 <div className="text-indigo-200 space-y-1">
-                    <p className="flex items-center gap-2"><FileText size={16}/> Roll Number: <span className="font-mono font-bold text-white">{userProfile.rollNumber}</span></p>
-                    <p className="flex items-center gap-2"><GraduationCap size={16}/> Academic Year: <span className="text-white">{userProfile.year}</span> | Section: <span className="text-white">{userProfile.section}</span></p>
+                    <p className="flex items-center gap-2 text-sm"><FileText size={16}/> Roll No: <span className="font-mono font-bold text-white">{userProfile.rollNumber}</span></p>
+                    <p className="flex items-center gap-2 text-sm"><GraduationCap size={16}/> Year {userProfile.year} | {userProfile.branch} | Section {userProfile.section}</p>
                 </div>
             ) : (
                 <p className="text-gray-300">Loading profile...</p>
@@ -253,7 +273,7 @@ const DashboardHome = ({ allElections, voterData, userProfile }) => {
   );
 };
 
-// --- ResultsView (Simplified) ---
+// --- ResultsView ---
 const ResultsView = ({ allElections, onRefresh }) => {
     const [selectedId, setSelectedId] = useState(null);
     const [analysis, setAnalysis] = useState('');
@@ -327,23 +347,23 @@ export default function App() {
     // DATA STATES
     const [allElections, setAllElections] = useState([]);
     const [voterData, setVoterData] = useState(null);
-    const [userProfile, setUserProfile] = useState(null); // Store Profile Info
+    const [userProfile, setUserProfile] = useState(null); 
 
     const loadAppData = useCallback(async () => {
         const { data: { session } } = await supabase.auth.getSession();
         if (!session) return;
         
         try {
-            // 1. Fetch Elections (Backend filters them)
+            // Fetch Elections
             const elRes = await fetch('/api/getElections', { headers: { 'Authorization': `Bearer ${session.access_token}` } });
             const elData = await elRes.json();
             setAllElections(elData.allElections || []);
 
-            // 2. Fetch User Profile & Votes
+            // Fetch User Profile
             const vRes = await fetch('/api/getVoteDetails', { headers: { 'Authorization': `Bearer ${session.access_token}` } });
             const vData = await vRes.json();
             setVoterData(vData.votes_cast || {});
-            setUserProfile(vData.profile || null); // Save Profile
+            setUserProfile(vData.profile || null);
         } catch (e) { console.error(e); }
     }, []);
 

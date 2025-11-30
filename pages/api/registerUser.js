@@ -14,41 +14,39 @@ export default async function handler(req, res) {
         return res.status(405).json({ error: 'Method Not Allowed' });
     }
 
-    // NEW: Receive extra data (Roll No, Section)
-    const { userId, email, rollNumber, section } = req.body;
+    const { userId, email, rollNumber, section, year, branch } = req.body;
 
-    if (!userId || !email || !rollNumber || !section) {
-        return res.status(400).json({ error: 'User ID, Email, Roll Number, and Section are required.' });
+    // 1. Basic Validation
+    if (!userId || !email || !rollNumber || !section || !year || !branch) {
+        return res.status(400).json({ error: 'All fields (Roll No, Section, Year, Branch) are required.' });
     }
 
-    // --- NEW: Roll Number Validation Logic ---
     const cleanRollNo = rollNumber.trim().toUpperCase();
     const cleanSection = section.trim().toUpperCase();
+    const cleanBranch = branch.trim().toUpperCase();
+    const numericYear = Number(year);
 
-    // 1. Check Length (Must be 13 digits)
+    // 2. Validate Roll Number Format (13 chars)
     if (cleanRollNo.length !== 13) {
         return res.status(400).json({ error: 'Roll Number must be exactly 13 characters.' });
     }
 
-    // 2. Determine Year based on Prefix
-    // Logic: AP22 -> 4th, AP23 -> 3rd, AP24 -> 2nd, AP25 -> 1st
-    let academicYear = 0;
-    
-    if (cleanRollNo.startsWith('AP221100')) {
-        academicYear = 4;
-    } else if (cleanRollNo.startsWith('AP231100')) {
-        academicYear = 3;
-    } else if (cleanRollNo.startsWith('AP241100')) {
-        academicYear = 2;
-    } else if (cleanRollNo.startsWith('AP251100')) {
-        academicYear = 1;
-    } else {
-        return res.status(400).json({ error: 'Invalid Roll Number format. Must start with AP22, AP23, AP24, or AP25.' });
+    // 3. Logic Check: Does Roll No match the Year selected?
+    // This prevents a 1st year student from registering as a 4th year to vote in their election.
+    let expectedPrefix = "";
+    if (numericYear === 4) expectedPrefix = "AP22";
+    else if (numericYear === 3) expectedPrefix = "AP23";
+    else if (numericYear === 2) expectedPrefix = "AP24";
+    else if (numericYear === 1) expectedPrefix = "AP25";
+
+    if (!cleanRollNo.startsWith(expectedPrefix)) {
+        return res.status(400).json({ 
+            error: `Roll Number mismatch! ${numericYear === 1 ? '1st' : numericYear === 2 ? '2nd' : numericYear === 3 ? '3rd' : '4th'} Year students must have a Roll No starting with ${expectedPrefix}.` 
+        });
     }
-    // ------------------------------------------
 
     try {
-        console.log(`Registering: ${email}, Year: ${academicYear}, Section: ${cleanSection}`);
+        console.log(`Registering: ${email} | ${cleanRollNo} | ${cleanBranch} | Year ${numericYear} | Sec ${cleanSection}`);
 
         const { data, error } = await supabaseAdmin
             .from('voters')
@@ -56,9 +54,10 @@ export default async function handler(req, res) {
                 {
                     id: userId,
                     email: email,
-                    roll_number: cleanRollNo,    // Save Roll No
-                    academic_year: academicYear, // Save Calculated Year
-                    section: cleanSection,       // Save Section
+                    roll_number: cleanRollNo,
+                    academic_year: numericYear, // Store the Year explicitly
+                    section: cleanSection,
+                    branch: cleanBranch,        // Store the Branch
                     votes_cast: {}
                 }
             ])
