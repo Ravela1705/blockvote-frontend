@@ -6,21 +6,9 @@ const CONTRACT_ADDRESS = process.env.NEXT_PUBLIC_CONTRACT_ADDRESS;
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
-// --- NEW ABI FOR ARRAYS ---
+// HARDCODED ABI FOR STABILITY
 const CONTRACT_ABI = [
-  {
-    "inputs": [{"internalType": "uint256", "name": "_electionId", "type": "uint256"}],
-    "name": "getElectionDetails",
-    "outputs": [
-      {"internalType": "string", "name": "name", "type": "string"},
-      {"internalType": "uint256", "name": "startTime", "type": "uint256"},
-      {"internalType": "uint256", "name": "endTime", "type": "uint256"},
-      {"internalType": "uint256[]", "name": "targetYears", "type": "uint256[]"}, // Array
-      {"internalType": "string[]", "name": "targetSections", "type": "string[]"}  // Array
-    ],
-    "stateMutability": "view",
-    "type": "function"
-  },
+  { "inputs": [{"internalType": "uint256", "name": "_electionId", "type": "uint256"}], "name": "getElectionDetails", "outputs": [{"internalType": "string", "name": "name", "type": "string"}, {"internalType": "uint256", "name": "startTime", "type": "uint256"}, {"internalType": "uint256", "name": "endTime", "type": "uint256"}, {"internalType": "uint256[]", "name": "targetYears", "type": "uint256[]"}, {"internalType": "string[]", "name": "targetSections", "type": "string[]"}], "stateMutability": "view", "type": "function" },
   { "inputs": [{"internalType": "uint256", "name": "_electionId", "type": "uint256"}], "name": "getElectionCandidates", "outputs": [{"components": [{"internalType": "uint256", "name": "id", "type": "uint256"}, {"internalType": "string", "name": "name", "type": "string"}, {"internalType": "uint256", "name": "voteCount", "type": "uint256"}], "internalType": "struct Voting.Candidate[]", "name": "", "type": "tuple[]"}], "stateMutability": "view", "type": "function" },
   { "inputs": [], "name": "getElectionCount", "outputs": [{"internalType": "uint256", "name": "", "type": "uint256"}], "stateMutability": "view", "type": "function" }
 ];
@@ -38,49 +26,49 @@ export default async function handler(req, res) {
 
     // Check Role
     const { data: voterData, error: dbError } = await supabaseAdmin.from('voters').select('academic_year, section').eq('id', user.id).single();
-    const isAdmin = !!dbError || !voterData; 
+    const isAdmin = !!dbError || !voterData; // If not in voters table, treat as Admin
     const userYear = voterData?.academic_year;
     const userSection = voterData?.section;
 
-    // Blockchain
     const provider = new ethers.providers.JsonRpcProvider(RPC_URL);
     const contract = new ethers.Contract(CONTRACT_ADDRESS, CONTRACT_ABI, provider);
     const countBN = await contract.getElectionCount();
-    const electionCount = countBN.toNumber();
-    const allElections = [];
+    const count = countBN.toNumber();
+    const elections = [];
 
-    for (let i = 1; i <= electionCount; i++) {
+    for (let i = 1; i <= count; i++) {
         try {
             const details = await contract.getElectionDetails(i);
-            
-            // Convert BigNumber Arrays to native JS arrays
             const targetYears = details.targetYears.map(y => y.toNumber());
-            const targetSections = details.targetSections; // Strings are already strings
+            const targetSections = details.targetSections;
 
-            // --- NEW FILTERING LOGIC ---
-            // Student sees election IF their Year is in List AND their Section is in List
+            // FILTERING LOGIC
             if (!isAdmin) {
-                const yearMatch = targetYears.includes(userYear);
-                const sectionMatch = targetSections.includes(userSection);
-                if (!yearMatch || !sectionMatch) continue; // Skip if no match
+                let isEligible = false;
+                for (let k = 0; k < targetYears.length; k++) {
+                    if (targetYears[k] === userYear && targetSections[k] === userSection) {
+                        isEligible = true;
+                        break;
+                    }
+                }
+                if (!isEligible) continue; // Skip if no specific pair matches
             }
 
-            const candidatesData = await contract.getElectionCandidates(i);
-            const candidates = candidatesData.map(c => ({ id: c.id.toNumber(), name: c.name, votes: c.voteCount.toNumber() }));
-            const totalVotes = candidates.reduce((acc, c) => acc + c.votes, 0);
+            const cands = await contract.getElectionCandidates(i);
+            const formattedCands = cands.map(c => ({ id: c.id.toNumber(), name: c.name, votes: c.voteCount.toNumber() }));
+            const total = formattedCands.reduce((a, c) => a + c.votes, 0);
             const now = Math.floor(Date.now() / 1000);
             const start = details.startTime.toNumber();
             const end = details.endTime.toNumber();
-            let status = now >= end ? 'Ended' : now >= start ? 'Active' : 'Upcoming';
+            const status = now >= end ? 'Ended' : now >= start ? 'Active' : 'Upcoming';
 
-            allElections.push({
+            elections.push({
                 id: i, title: details.name, startTime: start, endTime: end,
-                targetYears, targetSections, // Return arrays for frontend display
-                status, candidates, totalVotes
+                targetYears, targetSections, status, candidates: formattedCands, totalVotes: total
             });
-        } catch (e) { console.error(`Error fetching election ${i}`, e); }
+        } catch (e) { console.error(`Err ${i}`, e); }
     }
 
-    res.status(200).json({ allElections: allElections.reverse() });
-  } catch (error) { console.error("API Error:", error); res.status(500).json({ error: 'Failed to fetch elections.' }); }
+    res.status(200).json({ allElections: elections.reverse() });
+  } catch (error) { console.error("API Error:", error); res.status(500).json({ error: 'Failed' }); }
 }

@@ -1,14 +1,13 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { supabase } from '../lib/supabaseClient'; 
-import { 
-  Plus, Trash2, Loader2, AlertTriangle, CheckCircle, ListPlus, Clock, 
-  LogIn, User, Shield, BarChart3, List, LogOut, RefreshCw, Users, CheckSquare, Square 
+import { supabase } from '../lib/supabaseClient';
+import {
+  Plus, Trash2, Loader2, AlertTriangle, CheckCircle, ListPlus, Clock,
+  Shield, BarChart3, List, LogOut, RefreshCw, X
 } from 'lucide-react';
 
 const LoadingSpinner = () => <Loader2 size={16} className="animate-spin" />;
 const ALL_SECTIONS = Array.from({length: 26}, (_, i) => String.fromCharCode(65 + i)); // A-Z
-const ALL_YEARS = [1, 2, 3, 4];
 
 // --- Admin Login ---
 const AdminLogin = () => {
@@ -41,33 +40,27 @@ const AdminLogin = () => {
     );
 };
 
-// --- MULTI-SELECT Create Election ---
+// --- PAIR-BASED Create Election ---
 const CreateElectionView = () => {
     const [electionTitle, setElectionTitle] = useState('');
     const [candidates, setCandidates] = useState(['', '']);
     const [duration, setDuration] = useState(24);
-    
-    // --- NEW: Multi-Select States ---
-    const [selectedYears, setSelectedYears] = useState([]);
-    const [selectedSections, setSelectedSections] = useState([]);
+
+    // --- Pair Logic ---
+    const [tempYear, setTempYear] = useState('1');
+    const [tempSection, setTempSection] = useState('A');
+    const [targetPairs, setTargetPairs] = useState([]);
 
     const [loading, setLoading] = useState(false);
     const [message, setMessage] = useState({ type: '', text: '' });
 
-    // Toggle Helpers
-    const toggleYear = (y) => {
-        if(selectedYears.includes(y)) setSelectedYears(selectedYears.filter(item => item !== y));
-        else setSelectedYears([...selectedYears, y]);
-    };
-    const toggleSection = (s) => {
-        if(selectedSections.includes(s)) setSelectedSections(selectedSections.filter(item => item !== s));
-        else setSelectedSections([...selectedSections, s]);
-    };
-    const selectAllSections = () => {
-        if (selectedSections.length === ALL_SECTIONS.length) setSelectedSections([]);
-        else setSelectedSections([...ALL_SECTIONS]);
+    const addPair = () => {
+        if (!targetPairs.find(p => p.year === tempYear && p.section === tempSection)) {
+            setTargetPairs([...targetPairs, { year: tempYear, section: tempSection }]);
+        }
     };
 
+    const removePair = (index) => setTargetPairs(targetPairs.filter((_, i) => i !== index));
     const handleCandidateChange = (i, v) => { const n = [...candidates]; n[i] = v; setCandidates(n); };
     const addCand = () => setCandidates([...candidates, '']);
     const removeCand = (i) => { if(candidates.length > 2) setCandidates(candidates.filter((_, idx) => idx !== i)); };
@@ -75,65 +68,59 @@ const CreateElectionView = () => {
     const handleCreate = async (e) => {
         e.preventDefault(); setLoading(true); setMessage({type:'',text:''});
         const filled = candidates.map(c => c.trim()).filter(c => c !== '');
-        
-        if (selectedYears.length === 0 || selectedSections.length === 0) {
-            setMessage({ type: 'error', text: 'Please select at least one Year and one Section.' });
-            setLoading(false); return;
-        }
+
+        if (targetPairs.length === 0) { setMessage({ type: 'error', text: 'Add at least one Target Group.' }); setLoading(false); return; }
+
+        const yearsArray = targetPairs.map(p => Number(p.year));
+        const sectionsArray = targetPairs.map(p => p.section);
 
         try {
             const res = await fetch('/api/createElection', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ 
-                    title: electionTitle.trim(), 
-                    candidates: filled, 
+                body: JSON.stringify({
+                    title: electionTitle.trim(),
+                    candidates: filled,
                     durationHours: Number(duration),
-                    targetYears: selectedYears,     // Send Array
-                    targetSections: selectedSections // Send Array
+                    targetYears: yearsArray,
+                    targetSections: sectionsArray
                 }),
             });
             const data = await res.json();
             if (!res.ok) throw new Error(data.error);
             setMessage({ type: 'success', text: `Election Created! ID: ${data.electionId}` });
-            setElectionTitle(''); setCandidates(['','']); setSelectedYears([]); setSelectedSections([]);
+            setElectionTitle(''); setCandidates(['','']); setTargetPairs([]);
         } catch (err) { setMessage({ type: 'error', text: err.message }); }
         setLoading(false);
     };
 
     return (
         <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
-            <h2 className="text-3xl font-bold mb-6 text-white">Create Multi-Section Election</h2>
+            <h2 className="text-3xl font-bold mb-6 text-white">Create Targeted Election</h2>
             {message.text && <div className={`p-4 mb-6 rounded ${message.type === 'success' ? 'bg-green-900 text-green-300' : 'bg-red-900 text-red-300'}`}>{message.text}</div>}
-            
+
             <form onSubmit={handleCreate} className="bg-gray-800 p-6 rounded-lg border border-gray-700 space-y-6">
-                <div><label className="block text-gray-300 mb-2">Title</label><input type="text" value={electionTitle} onChange={e=>setElectionTitle(e.target.value)} className="w-full p-3 bg-gray-900 rounded text-white" placeholder="e.g. Sports Captain" required /></div>
+                <div><label className="block text-gray-300 mb-2">Title</label><input type="text" value={electionTitle} onChange={e=>setElectionTitle(e.target.value)} className="w-full p-3 bg-gray-900 rounded text-white" placeholder="e.g. Hackathon Registration" required /></div>
 
-                {/* --- Multi-Select Years --- */}
-                <div>
-                    <label className="block text-gray-300 mb-2">Target Years</label>
-                    <div className="flex gap-4 flex-wrap">
-                        {ALL_YEARS.map(y => (
-                            <button key={y} type="button" onClick={() => toggleYear(y)} className={`px-4 py-2 rounded border ${selectedYears.includes(y) ? 'bg-indigo-600 border-indigo-500 text-white' : 'bg-gray-900 border-gray-700 text-gray-400'}`}>
-                                Year {y}
-                            </button>
-                        ))}
+                {/* --- Target Audience Pairs --- */}
+                <div className="p-4 bg-gray-900 rounded border border-gray-700">
+                    <label className="block text-gray-300 mb-2">Target Audience Rules</label>
+                    <div className="flex gap-2 mb-3">
+                        <select value={tempYear} onChange={e=>setTempYear(e.target.value)} className="p-2 bg-gray-800 text-white rounded border border-gray-600 flex-1">
+                            {[1,2,3,4].map(y=><option key={y} value={y}>{y} Year</option>)}
+                        </select>
+                        <select value={tempSection} onChange={e=>setTempSection(e.target.value)} className="p-2 bg-gray-800 text-white rounded border border-gray-600 flex-1">
+                            {ALL_SECTIONS.map(s=><option key={s} value={s}>Section {s}</option>)}
+                        </select>
+                        <button type="button" onClick={addPair} className="px-4 py-2 bg-indigo-600 rounded text-white text-sm font-bold">Add Group</button>
                     </div>
-                </div>
 
-                {/* --- Multi-Select Sections --- */}
-                <div>
-                    <div className="flex justify-between items-center mb-2">
-                        <label className="block text-gray-300">Target Sections</label>
-                        <button type="button" onClick={selectAllSections} className="text-xs text-indigo-400 hover:text-indigo-300">
-                            {selectedSections.length === ALL_SECTIONS.length ? 'Deselect All' : 'Select All'}
-                        </button>
-                    </div>
-                    <div className="grid grid-cols-6 sm:grid-cols-8 md:grid-cols-13 gap-2">
-                        {ALL_SECTIONS.map(s => (
-                            <button key={s} type="button" onClick={() => toggleSection(s)} className={`px-2 py-2 text-sm rounded border ${selectedSections.includes(s) ? 'bg-purple-600 border-purple-500 text-white' : 'bg-gray-900 border-gray-700 text-gray-400'}`}>
-                                {s}
-                            </button>
+                    <div className="flex flex-wrap gap-2">
+                        {targetPairs.map((p, i) => (
+                            <div key={i} className="flex items-center gap-2 bg-gray-800 border border-gray-600 px-3 py-1 rounded-full text-sm text-indigo-300">
+                                <span>Year {p.year} - Sec {p.section}</span>
+                                <button type="button" onClick={()=>removePair(i)} className="text-red-400 hover:text-white"><X size={14}/></button>
+                            </div>
                         ))}
                     </div>
                 </div>
@@ -164,6 +151,7 @@ const ViewResultsView = () => {
         const { data: { session } } = await supabase.auth.getSession();
         if(!session) return;
         try {
+            // Updated: Added Auth Header to fix empty results for admin
             const res = await fetch('/api/getElections', { headers: { 'Authorization': `Bearer ${session.access_token}` } });
             const d = await res.json();
             setElections(d.allElections || []);
@@ -183,8 +171,9 @@ const ViewResultsView = () => {
                     <div className="flex justify-between mb-4">
                         <h3 className="text-xl font-bold">{e.title}</h3>
                         <div className="text-right text-xs text-gray-400">
-                            <p>Years: {e.targetYears.join(", ")}</p>
-                            <p>Sections: {e.targetSections.join(", ")}</p>
+                            {e.targetYears.map((y, i) => (
+                                <span key={i} className="block">Year {y} - Sec {e.targetSections[i]}</span>
+                            ))}
                         </div>
                     </div>
                     {e.candidates.map(c => (
@@ -219,12 +208,12 @@ export default function AdminPage() {
     if(!session || !isAdmin) return session && !isAdmin ? <div className="h-screen bg-gray-950 flex items-center justify-center text-white">Access Denied</div> : <AdminLogin />;
 
     return (
-        <div className="flex h-screen bg-gray-950 text-white">
+        <div className="flex h-screen bg-gray-950 text-white font-inter">
             <div className="w-64 bg-gray-900 p-5 border-r border-gray-800 flex flex-col">
                 <h1 className="text-2xl font-bold mb-8">Admin</h1>
-                <button onClick={()=>setView('create')} className={`text-left p-3 rounded mb-2 ${view==='create'?'bg-indigo-600':'hover:bg-gray-800'}`}>Create Election</button>
-                <button onClick={()=>setView('results')} className={`text-left p-3 rounded mb-2 ${view==='results'?'bg-indigo-600':'hover:bg-gray-800'}`}>View Results</button>
-                <button onClick={()=>supabase.auth.signOut()} className="mt-auto text-red-400">Logout</button>
+                <button onClick={()=>setView('create')} className={`text-left p-3 rounded mb-2 ${view==='create'?'bg-indigo-600':'hover:bg-gray-800'}`}>Create</button>
+                <button onClick={()=>setView('results')} className={`text-left p-3 rounded mb-2 ${view==='results'?'bg-indigo-600':'hover:bg-gray-800'}`}>Results</button>
+                <button onClick={()=>supabase.auth.signOut()} className="mt-auto text-red-400 flex items-center gap-2"><LogOut size={16}/> Logout</button>
             </div>
             <div className="flex-1 p-10 overflow-y-auto">{view==='create'?<CreateElectionView/>:<ViewResultsView/>}</div>
         </div>
