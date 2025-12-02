@@ -169,7 +169,7 @@ const ViewResultsView = () => {
             {elections.map(e => (
                 <div key={e.id} className="bg-gray-800 p-6 rounded border border-gray-700">
                     <div className="flex justify-between mb-4">
-                        <h3 className="text-xl font-bold">{e.title}</h3>
+                        <h3 className="text-xl font-bold">Election Title : {e.title}</h3>
                         <div className="text-right text-xs text-gray-400">
                             {e.targetYears.map((y, i) => (
                                 <span key={i} className="block">Year {y} - Sec {e.targetSections[i]}</span>
